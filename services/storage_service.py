@@ -1,0 +1,223 @@
+"""
+Storage service for persisting conversations and settings
+"""
+
+import os
+import json
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+
+from models.conversation import Conversation
+from models.provider import Provider
+
+
+class StorageService:
+    """Handles local storage of conversations and providers"""
+    
+    def __init__(self, data_dir: str = None):
+        if data_dir is None:
+            # Default to user's app data directory
+            app_data = os.getenv('APPDATA', os.path.expanduser('~'))
+            data_dir = os.path.join(app_data, 'PyChat')
+        
+        self.data_dir = Path(data_dir)
+        self.conversations_dir = self.data_dir / 'conversations'
+        self.providers_file = self.data_dir / 'providers.json'
+        self.settings_file = self.data_dir / 'settings.json'
+        
+        # Ensure directories exist
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.conversations_dir.mkdir(parents=True, exist_ok=True)
+
+    # ============ Conversation Operations ============
+    
+    def save_conversation(self, conversation: Conversation) -> bool:
+        """Save a conversation to disk"""
+        try:
+            file_path = self.conversations_dir / f"{conversation.id}.json"
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(conversation.to_json())
+            return True
+        except Exception as e:
+            print(f"Error saving conversation: {e}")
+            return False
+
+    def load_conversation(self, conversation_id: str) -> Optional[Conversation]:
+        """Load a conversation by ID"""
+        try:
+            file_path = self.conversations_dir / f"{conversation_id}.json"
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return Conversation.from_json(f.read())
+        except Exception as e:
+            print(f"Error loading conversation: {e}")
+        return None
+
+    def list_conversations(self) -> List[Dict[str, Any]]:
+        """List all conversations (metadata only for performance)"""
+        conversations = []
+        try:
+            for file_path in self.conversations_dir.glob('*.json'):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # Return only metadata, not full messages
+                    conversations.append({
+                        'id': data.get('id'),
+                        'title': data.get('title', 'Untitled'),
+                        'created_at': data.get('created_at'),
+                        'updated_at': data.get('updated_at'),
+                        'model': data.get('model', ''),
+                        'message_count': len(data.get('messages', []))
+                    })
+        except Exception as e:
+            print(f"Error listing conversations: {e}")
+        
+        # Sort by updated_at descending
+        conversations.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
+        return conversations
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation"""
+        try:
+            file_path = self.conversations_dir / f"{conversation_id}.json"
+            if file_path.exists():
+                file_path.unlink()
+                return True
+        except Exception as e:
+            print(f"Error deleting conversation: {e}")
+        return False
+
+    def import_conversation(self, file_path: str) -> Optional[Conversation]:
+        """Import a conversation from an external JSON file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            # Handle different JSON formats
+            conversation = self._parse_imported_data(data)
+            if conversation:
+                # Assign new ID to avoid conflicts
+                import uuid
+                conversation.id = str(uuid.uuid4())
+                self.save_conversation(conversation)
+                return conversation
+        except Exception as e:
+            print(f"Error importing conversation: {e}")
+        return None
+
+    def _parse_imported_data(self, data: Dict[str, Any]) -> Optional[Conversation]:
+        """Parse imported JSON data, handling different formats"""
+        # OpenAI / OpenRouter request payload format
+        # {"model": "...", "messages": [{"role": "user", "content": [...] }], "max_tokens":..., ...}
+        if isinstance(data, dict) and 'model' in data and 'messages' in data and isinstance(data.get('messages'), list):
+            from models.conversation import Message
+
+            messages = [Message.from_dict(m) for m in data.get('messages', []) if isinstance(m, dict)]
+            conv = Conversation(
+                title=data.get('title', 'Imported Payload'),
+                messages=messages,
+                model=data.get('model', ''),
+                settings={
+                    'max_tokens': data.get('max_tokens'),
+                    'temperature': data.get('temperature'),
+                    'response_mime_type': data.get('response_mime_type'),
+                }
+            )
+            # Clean None values in settings
+            conv.settings = {k: v for k, v in conv.settings.items() if v is not None}
+            if not data.get('title'):
+                conv.generate_title_from_first_message()
+            return conv
+
+        # Direct Conversation format
+        if 'messages' in data:
+            return Conversation.from_dict(data)
+        
+        # ChatGPT export format
+        if 'mapping' in data:
+            return self._parse_chatgpt_format(data)
+        
+        # Array of messages format
+        if isinstance(data, list):
+            from models.conversation import Message
+            messages = [Message.from_dict(m) for m in data]
+            conv = Conversation(messages=messages)
+            conv.generate_title_from_first_message()
+            return conv
+        
+        return None
+
+    def _parse_chatgpt_format(self, data: Dict[str, Any]) -> Conversation:
+        """Parse ChatGPT export format"""
+        from models.conversation import Message
+        import uuid
+        
+        messages = []
+        mapping = data.get('mapping', {})
+        
+        # Extract messages from mapping
+        for node_id, node in mapping.items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('content'):
+                role = msg_data.get('author', {}).get('role', 'user')
+                content_parts = msg_data.get('content', {}).get('parts', [])
+                content = '\n'.join(str(p) for p in content_parts if isinstance(p, str))
+                
+                if content and role in ['user', 'assistant']:
+                    messages.append(Message(
+                        id=str(uuid.uuid4()),
+                        role=role,
+                        content=content
+                    ))
+        
+        conv = Conversation(
+            title=data.get('title', 'Imported Chat'),
+            messages=messages
+        )
+        return conv
+
+    # ============ Provider Operations ============
+    
+    def save_providers(self, providers: List[Provider]) -> bool:
+        """Save all providers"""
+        try:
+            data = [p.to_dict() for p in providers]
+            with open(self.providers_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"Error saving providers: {e}")
+            return False
+
+    def load_providers(self) -> List[Provider]:
+        """Load all providers"""
+        try:
+            if self.providers_file.exists():
+                with open(self.providers_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return [Provider.from_dict(p) for p in data]
+        except Exception as e:
+            print(f"Error loading providers: {e}")
+        return []
+
+    # ============ Settings Operations ============
+    
+    def save_settings(self, settings: Dict[str, Any]) -> bool:
+        """Save application settings"""
+        try:
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+            return False
+
+    def load_settings(self) -> Dict[str, Any]:
+        """Load application settings"""
+        try:
+            if self.settings_file.exists():
+                with open(self.settings_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+        return {}

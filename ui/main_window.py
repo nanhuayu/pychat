@@ -1,0 +1,480 @@
+"""
+Main application window - Chinese UI with fixed streaming
+"""
+
+import asyncio
+import os
+import threading
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QSplitter, QMessageBox
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QAction
+from typing import Optional
+
+from models.conversation import Conversation, Message
+from models.provider import Provider
+from services.storage_service import StorageService
+from services.chat_service import ChatService
+from services.provider_service import ProviderService
+
+from .widgets.sidebar import Sidebar
+from .widgets.chat_view import ChatView
+from .widgets.input_area import InputArea
+from .widgets.stats_panel import StatsPanel
+from .dialogs.settings_dialog import SettingsDialog
+from .dialogs.message_editor import MessageEditorDialog
+
+
+class StreamingSignals(QObject):
+    """Signals for thread-safe UI updates during streaming"""
+    token_received = pyqtSignal(str)
+    thinking_received = pyqtSignal(str)
+    response_complete = pyqtSignal(object)
+    response_error = pyqtSignal(str)
+
+
+class MainWindow(QMainWindow):
+    """Main application window"""
+    
+    def __init__(self):
+        super().__init__()
+        
+        self.storage = StorageService()
+        self.chat_service = ChatService()
+        self.provider_service = ProviderService()
+        
+        self.providers: list[Provider] = []
+        self.current_conversation: Optional[Conversation] = None
+        self._is_streaming = False
+        self._app_settings: dict = {}
+        
+        # Streaming signals for thread-safe UI updates
+        self._signals = StreamingSignals()
+        self._signals.token_received.connect(self._on_token_received)
+        self._signals.thinking_received.connect(self._on_thinking_received)
+        self._signals.response_complete.connect(self._on_response_complete)
+        self._signals.response_error.connect(self._on_response_error)
+        
+        self._setup_ui()
+        self._load_data()
+        self._apply_theme()
+    
+    def _setup_ui(self):
+        self.setWindowTitle("PyChat - LLM 会话管理")
+        self.setMinimumSize(1000, 600)
+        
+        central = QWidget()
+        central.setObjectName("central_widget")
+        central.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCentralWidget(central)
+        
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Sidebar
+        self.sidebar = Sidebar()
+        self.sidebar.conversation_selected.connect(self._on_conversation_selected)
+        self.sidebar.new_conversation.connect(self._new_conversation)
+        self.sidebar.import_conversation.connect(self._import_conversation)
+        self.sidebar.delete_conversation.connect(self._delete_conversation)
+        
+        # Chat area
+        chat_widget = QWidget()
+        chat_widget.setObjectName("chat_container")
+        chat_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        chat_layout = QVBoxLayout(chat_widget)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(0)
+        
+        self.chat_view = ChatView()
+        self.chat_view.edit_message.connect(self._edit_message)
+        self.chat_view.delete_message.connect(self._delete_message)
+        
+        self.input_area = InputArea()
+        self.input_area.message_sent.connect(self._send_message)
+
+        # Vertical splitter: message area <-> input area (user-resizable)
+        self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.chat_splitter.setObjectName("chat_splitter")
+        self.chat_splitter.setChildrenCollapsible(False)
+        self.chat_splitter.setHandleWidth(8)
+        self.chat_splitter.addWidget(self.chat_view)
+        self.chat_splitter.addWidget(self.input_area)
+        self.chat_splitter.setSizes([720, 180])
+        self.chat_splitter.splitterMoved.connect(self._on_chat_splitter_moved)
+
+        chat_layout.addWidget(self.chat_splitter, stretch=1)
+        
+        # Stats panel
+        self.stats_panel = StatsPanel()
+        
+        # Splitter
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setObjectName("main_splitter")
+        self.splitter.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(chat_widget)
+        self.splitter.addWidget(self.stats_panel)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(8)
+        self.splitter.setSizes([220, 720, 220])
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        
+        main_layout.addWidget(self.splitter)
+        self._create_menu_bar()
+    
+    def _create_menu_bar(self):
+        menubar = self.menuBar()
+        
+        file_menu = menubar.addMenu("文件")
+        
+        new_action = QAction("新建会话", self)
+        new_action.setShortcut("Ctrl+N")
+        new_action.triggered.connect(self._new_conversation)
+        file_menu.addAction(new_action)
+        
+        import_action = QAction("导入 JSON...", self)
+        import_action.setShortcut("Ctrl+I")
+        import_action.triggered.connect(lambda: self.sidebar._import_conversation())
+        file_menu.addAction(import_action)
+        
+        file_menu.addSeparator()
+        
+        settings_action = QAction("设置...", self)
+        settings_action.setShortcut("Ctrl+,")
+        settings_action.triggered.connect(self._open_settings)
+        file_menu.addAction(settings_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction("退出", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        edit_menu = menubar.addMenu("编辑")
+        
+        cancel_action = QAction("取消生成", self)
+        cancel_action.setShortcut("Escape")
+        cancel_action.triggered.connect(self._cancel_generation)
+        edit_menu.addAction(cancel_action)
+        
+        view_menu = menubar.addMenu("视图")
+        
+        self.toggle_stats_action = QAction("显示统计", self)
+        self.toggle_stats_action.setCheckable(True)
+        self.toggle_stats_action.setChecked(True)
+        self.toggle_stats_action.triggered.connect(self._toggle_stats_panel)
+        view_menu.addAction(self.toggle_stats_action)
+        
+        help_menu = menubar.addMenu("帮助")
+        
+        about_action = QAction("关于 PyChat", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+    
+    def _load_data(self):
+        self._app_settings = self.storage.load_settings() or {}
+
+        self.providers = self.storage.load_providers()
+        if not self.providers:
+            self.providers = self.provider_service.create_default_providers()
+            self.storage.save_providers(self.providers)
+        
+        self.input_area.set_providers(self.providers)
+        
+        conversations = self.storage.list_conversations()
+        self.sidebar.update_conversations(conversations)
+
+        # Apply appearance settings that don't depend on QSS
+        show_stats = bool(self._app_settings.get('show_stats', True))
+        self.stats_panel.setVisible(show_stats)
+        self.toggle_stats_action.setChecked(show_stats)
+
+        # Restore splitter sizes (sidebar/chat/stats)
+        sizes = self._app_settings.get('splitter_sizes')
+        if isinstance(sizes, list) and len(sizes) == 3 and all(isinstance(x, int) for x in sizes):
+            try:
+                self.splitter.setSizes(sizes)
+            except Exception:
+                pass
+
+        # Restore chat splitter sizes (messages/input)
+        chat_sizes = self._app_settings.get('chat_splitter_sizes')
+        if isinstance(chat_sizes, list) and len(chat_sizes) == 2 and all(isinstance(x, int) for x in chat_sizes):
+            try:
+                self.chat_splitter.setSizes(chat_sizes)
+            except Exception:
+                pass
+
+    def _on_splitter_moved(self, pos: int, index: int):
+        # Persist user layout immediately
+        try:
+            self._app_settings['splitter_sizes'] = [int(x) for x in self.splitter.sizes()]
+            self.storage.save_settings(self._app_settings)
+        except Exception:
+            pass
+
+    def _on_chat_splitter_moved(self, pos: int, index: int):
+        try:
+            self._app_settings['chat_splitter_sizes'] = [int(x) for x in self.chat_splitter.sizes()]
+            self.storage.save_settings(self._app_settings)
+        except Exception:
+            pass
+    
+    def _apply_theme(self):
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            theme = (self._app_settings.get('theme') or 'dark').lower()
+            theme_file = 'light_theme.qss' if theme == 'light' else 'dark_theme.qss'
+            theme_path = os.path.join(base_dir, 'assets', 'styles', theme_file)
+            
+            if os.path.exists(theme_path):
+                with open(theme_path, 'r', encoding='utf-8') as f:
+                    self.setStyleSheet(f.read())
+        except Exception as e:
+            print(f"Error loading theme: {e}")
+    
+    def _on_conversation_selected(self, conversation_id: str):
+        conversation = self.storage.load_conversation(conversation_id)
+        if conversation:
+            self.current_conversation = conversation
+            self.chat_view.load_conversation(conversation)
+            self.stats_panel.update_stats(conversation)
+
+            # Sync provider first (so model list is populated), then sync model.
+            if conversation.provider_id:
+                for i, provider in enumerate(self.providers):
+                    if provider.id == conversation.provider_id:
+                        self.input_area.provider_combo.setCurrentIndex(i)
+                        break
+
+            if conversation.model:
+                self.input_area.model_combo.setCurrentText(conversation.model)
+    
+    def _new_conversation(self):
+        self.current_conversation = Conversation()
+        self.chat_view.clear()
+        self.stats_panel.update_stats(None)
+    
+    def _import_conversation(self, file_path: str):
+        conversation = self.storage.import_conversation(file_path)
+        if conversation:
+            conversations = self.storage.list_conversations()
+            self.sidebar.update_conversations(conversations)
+            self.sidebar.select_conversation(conversation.id)
+            self._on_conversation_selected(conversation.id)
+            QMessageBox.information(self, "导入成功", f"已导入会话: {conversation.title}")
+        else:
+            QMessageBox.warning(self, "导入失败", "无法导入会话，请检查 JSON 格式")
+    
+    def _delete_conversation(self, conversation_id: str):
+        if self.storage.delete_conversation(conversation_id):
+            conversations = self.storage.list_conversations()
+            self.sidebar.update_conversations(conversations)
+            
+            if self.current_conversation and self.current_conversation.id == conversation_id:
+                self.current_conversation = None
+                self.chat_view.clear()
+                self.stats_panel.update_stats(None)
+    
+    def _send_message(self, content: str, images: list):
+        if self._is_streaming:
+            return
+        
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+        
+        provider_id = self.input_area.get_selected_provider_id()
+        model = self.input_area.get_selected_model()
+        
+        provider = None
+        for p in self.providers:
+            if p.id == provider_id:
+                provider = p
+                break
+        
+        if not provider:
+            QMessageBox.warning(self, "错误", "请先在设置中配置服务商")
+            return
+        
+        if not model:
+            QMessageBox.warning(self, "错误", "请选择一个模型")
+            return
+        
+        self.current_conversation.provider_id = provider_id
+        self.current_conversation.model = model
+
+        # Keep UI (stats panel) in sync with the latest selection.
+        self.stats_panel.update_stats(self.current_conversation)
+
+        # Persist selection immediately so model switches take effect even before response.
+        self.storage.save_conversation(self.current_conversation)
+
+        # 空输入：如果当前会话最后一条是 user 消息，直接基于该会话发送一次
+        if not content and not images:
+            if self.current_conversation.messages and self.current_conversation.messages[-1].role == 'user':
+                self._start_streaming(provider)
+            return
+        
+        user_message = Message(role="user", content=content, images=images)
+        self.current_conversation.add_message(user_message)
+        
+        if len(self.current_conversation.messages) == 1:
+            self.current_conversation.generate_title_from_first_message()
+        
+        self.chat_view.add_message(user_message)
+        self.storage.save_conversation(self.current_conversation)
+        
+        conversations = self.storage.list_conversations()
+        self.sidebar.update_conversations(conversations)
+        self.sidebar.select_conversation(self.current_conversation.id)
+        
+        self._start_streaming(provider)
+    
+    def _start_streaming(self, provider: Provider):
+        self._is_streaming = True
+        self.input_area.set_enabled(False)
+        self.chat_view.start_streaming_response()
+        
+        conversation = self.current_conversation
+        signals = self._signals
+        chat_service = self.chat_service
+        
+        def run_async():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                async def chat():
+                    debug_log_path = None
+                    if bool(self._app_settings.get('log_stream', False)):
+                        try:
+                            debug_log_path = str(self.storage.data_dir / 'stream_debug.log')
+                        except Exception:
+                            debug_log_path = None
+
+                    return await chat_service.send_message(
+                        provider, conversation,
+                        on_token=lambda t: signals.token_received.emit(t),
+                        on_thinking=lambda t: signals.thinking_received.emit(t),
+                        enable_thinking=bool(self._app_settings.get('show_thinking', True)),
+                        debug_log_path=debug_log_path
+                    )
+                
+                response = loop.run_until_complete(chat())
+                loop.close()
+                
+                signals.response_complete.emit(response)
+            except Exception as e:
+                signals.response_error.emit(str(e))
+        
+        thread = threading.Thread(target=run_async, daemon=True)
+        thread.start()
+    
+    def _on_token_received(self, token: str):
+        """Handle token received during streaming - called from main thread"""
+        self.chat_view.append_streaming_content(token)
+
+    def _on_thinking_received(self, thinking: str):
+        """Handle thinking received during streaming - called from main thread"""
+        if bool(self._app_settings.get('show_thinking', True)):
+            self.chat_view.append_streaming_thinking(thinking)
+    
+    def _on_response_complete(self, response):
+        """Handle response completion - called from main thread"""
+        self._is_streaming = False
+        self.input_area.set_enabled(True)
+        
+        if isinstance(response, Message):
+            self.current_conversation.add_message(response)
+            self.chat_view.finish_streaming_response(response)
+            self.stats_panel.update_stats(self.current_conversation)
+            self.storage.save_conversation(self.current_conversation)
+    
+    def _on_response_error(self, error: str):
+        """Handle response error - called from main thread"""
+        self._is_streaming = False
+        self.input_area.set_enabled(True)
+        
+        error_message = Message(role="assistant", content=f"未知错误: {error}")
+        self.chat_view.finish_streaming_response(error_message)
+    
+    def _cancel_generation(self):
+        if self._is_streaming:
+            self.chat_service.cancel_request()
+    
+    def _edit_message(self, message_id: str):
+        if not self.current_conversation:
+            return
+        
+        message = None
+        for msg in self.current_conversation.messages:
+            if msg.id == message_id:
+                message = msg
+                break
+        
+        if not message:
+            return
+        
+        dialog = MessageEditorDialog(message, self)
+        if dialog.exec():
+            message.content = dialog.get_edited_content()
+            message.images = dialog.get_edited_images()
+            self.chat_view.update_message(message)
+            self.storage.save_conversation(self.current_conversation)
+    
+    def _delete_message(self, message_id: str):
+        if not self.current_conversation:
+            return
+        
+        reply = QMessageBox.question(
+            self, '删除消息', '确定要删除这条消息吗？',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.current_conversation.delete_message(message_id)
+            self.chat_view.remove_message(message_id)
+            self.stats_panel.update_stats(self.current_conversation)
+            self.storage.save_conversation(self.current_conversation)
+    
+    def _open_settings(self):
+        dialog = SettingsDialog(self.providers, current_settings=self._app_settings, parent=self)
+        if dialog.exec():
+            self.providers = dialog.get_providers()
+            self.storage.save_providers(self.providers)
+            self.input_area.set_providers(self.providers)
+            
+            self._app_settings['show_stats'] = dialog.get_show_stats()
+            self._app_settings['theme'] = dialog.get_theme()
+            self._app_settings['show_thinking'] = dialog.get_show_thinking()
+            self._app_settings['log_stream'] = dialog.get_log_stream()
+            self.storage.save_settings(self._app_settings)
+            self.stats_panel.setVisible(self._app_settings['show_stats'])
+            self.toggle_stats_action.setChecked(self._app_settings['show_stats'])
+            self._apply_theme()
+    
+    def _toggle_stats_panel(self, visible: bool):
+        self.stats_panel.setVisible(visible)
+        self._app_settings['show_stats'] = bool(visible)
+        self.storage.save_settings(self._app_settings)
+    
+    def _show_about(self):
+        QMessageBox.about(
+            self, "关于 PyChat",
+            "<h2>PyChat</h2>"
+            "<p>强大的大语言模型会话管理应用</p>"
+            "<p>功能:</p>"
+            "<ul>"
+            "<li>多服务商支持 (OpenAI, Claude, Ollama 等)</li>"
+            "<li>会话管理与 JSON 导入/导出</li>"
+            "<li>消息编辑与图片支持</li>"
+            "<li>思考模式支持</li>"
+            "<li>Token 统计与性能指标</li>"
+            "</ul>"
+            "<p>基于 PyQt6 构建</p>"
+        )

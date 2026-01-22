@@ -1,26 +1,18 @@
-/* PyChat Base Styles - Shared geometry/behavior (no theme colors) */
+/* PyChat Base Styles - Geometry Only (no colors) */
 
 * {
     font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
-/* Common control geometry */
+/* ============ Common Controls ============ */
 QPushButton {
     border-radius: 6px;
-    padding: 8px 14px;
+    padding: 6px 12px;
     font-size: 13px;
 }
 
-QPushButton[primary="true"] {
-    border-radius: 8px;
-}
-
-QPushButton#send_btn {
-    border-radius: 8px;
-}
-
 QToolButton {
-    border-radius: 6px;
+    border-radius: 4px;
 }
 
 QToolButton#toolbar_btn {
@@ -31,285 +23,106 @@ QToolButton#toolbar_btn {
 }
 
 QComboBox {
-    border-radius: 6px;
-    padding: 6px 10px;
-    min-height: 22px;
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-height: 20px;
     font-size: 13px;
 }
 
 QComboBox::drop-down {
     border: none;
-    width: 24px;
+    width: 20px;
 }
 
 QLineEdit, QTextEdit, QPlainTextEdit {
-    border-radius: 6px;
-    padding: 8px 12px;
+    border-radius: 4px;
+    padding: 6px 10px;
     font-size: 13px;
 }
 
 QSpinBox, QDoubleSpinBox {
-    border-radius: 6px;
-    padding: 6px 8px;
+    border-radius: 4px;
+    padding: 4px 6px;
     font-size: 13px;
 }
 
 QSpinBox::up-button, QDoubleSpinBox::up-button,
 QSpinBox::down-button, QDoubleSpinBox::down-button {
-    width: 20px;
+    width: 18px;
     border: none;
 }
 
-QListWidget::item {
-    padding: 8px;
+QListWidget {
     border-radius: 6px;
 }
 
-QListWidget {
-    border-radius: 8px;
+QListWidget::item {
+    padding: 6px;
+    border-radius: 4px;
 }
 
 QCheckBox {
-    spacing: 8px;
+    spacing: 6px;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
 }
 
 QGroupBox {
-    border-radius: 8px;
-    margin-top: 12px;
-    padding: 12px;
-    padding-top: 18px;
+    border-radius: 6px;
+    margin-top: 10px;
+    padding: 10px;
+    padding-top: 16px;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 12px;
-    padding: 0 6px;
+    left: 10px;
+    padding: 0 4px;
 }
 
 QTableWidget {
-    border-radius: 8px;
+    border-radius: 6px;
 }
 
-/* QTextBrowser defaults for message rendering */
 QTextBrowser {
     border: none;
-    padding: 0px;
-}
-
-/* Common app-specific geometry (objectName based) */
-#sidebar_header {
-    padding: 8px;
-}
-
-#search_input {
-    border-radius: 4px;
-    padding: 6px 10px;
-    font-size: 13px;
-}
-
-#new_chat_btn {
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-weight: 600;
-    font-size: 13px;
-}
-
-QPushButton#import_btn {
-    border-radius: 4px;
-    padding: 6px 10px;
-    font-size: 13px;
-}
-
-#conversation_list::item {
-    border-radius: 4px;
-    padding: 8px 10px;
-    margin: 1px 4px;
-}
-
-MessageWidget {
-    border-radius: 8px;
-}
-
-#streaming_container {
-    border-radius: 8px;
-}
-
-#input_wrapper {
-    border-radius: 6px;
-    padding: 8px;
-}
-
-QTextEdit#message_input {
-    font-size: 13px;
-    padding: 2px;
-}
-
-QLabel#message_badge {
-    font-size: 11px;
-    padding: 1px 6px;
-    border-radius: 8px;
-}
-
-QPushButton#thinking_toggle {
-    border-radius: 8px;
-    padding: 6px 10px;
-    font-size: 12px;
-    text-align: left;
-}
-
-QTextBrowser#thinking_content {
-    padding: 8px;
-    border-radius: 0 8px 8px 0;
-    font-size: 12px;
-}
-
-QFrame#image_preview_item {
-    border-radius: 6px;
-}
-
-QLabel#image_thumb {
-    font-size: 10px;
-}
-
-QPushButton#image_remove_btn {
-    border-radius: 6px;
-    font-size: 9px;
     padding: 0;
 }
 
-QPushButton#send_btn {
-    padding: 4px 10px;
-    font-size: 12px;
-    min-width: 0;
-    min-height: 24px;
-}
-
-QFrame#stat_card {
-    border-radius: 8px;
-}
-
-/* Message role and content geometry */
-QLabel#message_role {
-    font-size: 13px;
-    font-weight: 700;
-}
-
-QTextBrowser#message_content {
-    font-size: 13px;
-}
-
-/* Message action buttons geometry */
-QToolButton#msg_edit_btn {
-    border-radius: 6px;
-    font-size: 13px;
-}
-
-QToolButton#msg_delete_btn {
-    border-radius: 6px;
-    font-size: 14px;
-    font-weight: 700;
-}
-
-/* Chat header indicators geometry */
-QLabel#model_indicator {
-    font-size: 12px;
-    font-weight: 500;
-}
-
-QLabel#context_indicator {
-    font-size: 11px;
-}
-
-/* Input container geometry */
-#input_container, InputArea {
-    padding: 8px;
-}
-
-/* Stats panel geometry */
-QLabel#stats_title {
-    font-size: 13px;
-    font-weight: 600;
-}
-
-QLabel#stats_subtitle {
-    font-size: 11px;
-    font-weight: 600;
-    margin-top: 6px;
-}
-
-QLabel#stats_model {
-    border-radius: 8px;
-    padding: 6px 8px;
-    font-size: 11px;
-}
-
-QLabel#stat_label {
-    font-size: 11px;
-}
-
-QLabel#stat_value {
-    font-size: 16px;
-    font-weight: 600;
-}
-
-/* ComboBox dropdown geometry */
-QComboBox::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid currentColor;
-    margin-right: 6px;
-}
-
-QComboBox QAbstractItemView {
-    border-radius: 0;
-    outline: none;
-    padding: 2px 0;
-}
-
-QComboBox QAbstractItemView::item {
-    padding: 4px 10px;
-    border-radius: 0;
-}
-
-/* Table geometry */
-QTableWidget::item {
-    padding: 6px;
-}
-
-QHeaderView::section {
-    padding: 8px;
-    font-weight: 600;
-    border: none;
-}
-
-/* Image thumbnail placeholder geometry */
-QLabel#image_thumbnail[state="placeholder"] {
-    font-size: 18px;
-}
-
-/* Menu geometry - no rounded corners for clean edges */
+/* ============ Menu ============ */
 QMenuBar {
-    padding: 2px 4px;
-}
-
-QMenu {
-    border-radius: 0;
-    padding: 2px 0;
-}
-
-QMenu::item {
-    padding: 6px 20px;
-    border-radius: 0;
+    padding: 2px;
 }
 
 QMenuBar::item {
-    padding: 4px 10px;
+    padding: 4px 8px;
     border-radius: 0;
 }
 
-/* Scrollbar geometry */
+QMenu {
+    padding: 0;
+    border-radius: 0;
+}
+
+QMenu::item {
+    padding: 6px 24px;
+    border-radius: 0;
+    margin: 0;
+}
+
+QMenu::separator {
+    height: 10px;
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+/* ============ Scrollbar ============ */
 QScrollBar:vertical {
     width: 8px;
     margin: 0;
@@ -317,7 +130,7 @@ QScrollBar:vertical {
 
 QScrollBar::handle:vertical {
     border-radius: 4px;
-    min-height: 40px;
+    min-height: 30px;
 }
 
 QScrollBar::add-line:vertical,
@@ -332,7 +145,7 @@ QScrollBar:horizontal {
 
 QScrollBar::handle:horizontal {
     border-radius: 4px;
-    min-width: 40px;
+    min-width: 30px;
 }
 
 QScrollBar::add-line:horizontal,
@@ -340,51 +153,200 @@ QScrollBar::sub-line:horizontal {
     width: 0;
 }
 
-/* Tab geometry */
+/* ============ Tab ============ */
 QTabWidget::pane {
-    border-radius: 8px;
-    padding: 8px;
+    border-radius: 6px;
+    padding: 6px;
 }
 
 QTabBar::tab {
-    padding: 8px 16px;
-    margin-right: 4px;
-    border-radius: 6px;
+    padding: 6px 14px;
+    margin-right: 2px;
 }
 
-/* Tooltip geometry */
+/* ============ Tooltip ============ */
 QToolTip {
-    border-radius: 6px;
-    padding: 6px 10px;
+    border-radius: 4px;
+    padding: 4px 8px;
     font-size: 12px;
 }
 
-/* ProgressBar geometry */
-QProgressBar {
-    border-radius: 4px;
-    height: 8px;
-    text-align: center;
+/* ============ Splitter ============ */
+QSplitter::handle:horizontal {
+    width: 6px;
 }
 
-QProgressBar::chunk {
-    border-radius: 4px;
+QSplitter::handle:vertical {
+    height: 6px;
 }
 
-/* Checkbox indicator geometry */
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
+/* ============ App Specific ============ */
+
+/* Sidebar */
+#sidebar_header {
+    padding: 6px;
 }
 
-/* Message Editor Dialog geometry */
-QFrame#image_edit_item {
+#search_input {
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 13px;
+}
+
+#new_chat_btn {
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+QPushButton#import_btn {
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 13px;
+}
+
+#conversation_list::item {
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin: 1px 2px;
+}
+
+/* Message */
+MessageWidget {
     border-radius: 6px;
+}
+
+#streaming_container {
+    border-radius: 6px;
+}
+
+QLabel#message_role {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QTextBrowser#message_content {
+    font-size: 13px;
+}
+
+QLabel#message_badge {
+    font-size: 11px;
+    padding: 1px 5px;
+    border-radius: 6px;
+}
+
+QToolButton#msg_edit_btn,
+QToolButton#msg_delete_btn {
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+/* Chat Header */
+QLabel#model_indicator {
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QLabel#context_indicator {
+    font-size: 11px;
+}
+
+/* Input Area */
+#input_container, InputArea {
+    padding: 6px;
+}
+
+#input_wrapper {
+    border-radius: 6px;
+    padding: 6px;
+}
+
+QTextEdit#message_input {
+    font-size: 13px;
+    padding: 2px;
+}
+
+QPushButton#send_btn {
+    padding: 4px 8px;
+    font-size: 12px;
+    min-width: 0;
+    min-height: 22px;
+}
+
+/* Image Preview */
+QFrame#image_preview_item {
+    border-radius: 4px;
+}
+
+QLabel#image_thumb {
+    font-size: 10px;
+}
+
+QPushButton#image_remove_btn {
+    border-radius: 4px;
+    font-size: 9px;
+    padding: 0;
+}
+
+/* Stats Panel */
+QLabel#stats_title {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QLabel#stats_subtitle {
+    font-size: 11px;
+    font-weight: 600;
+    margin-top: 4px;
+}
+
+QLabel#stats_model {
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 11px;
+}
+
+QLabel#stat_label {
+    font-size: 11px;
+}
+
+QLabel#stat_value {
+    font-size: 15px;
+    font-weight: 700;
+}
+
+QFrame#stat_card {
+    border-radius: 6px;
+}
+
+/* Thinking */
+QPushButton#thinking_toggle {
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    text-align: left;
+}
+
+QTextBrowser#thinking_content {
+    padding: 6px;
+    border-radius: 0 6px 6px 0;
+    font-size: 12px;
+}
+
+/* Image Thumbnail */
+QLabel#image_thumbnail[state="placeholder"] {
+    font-size: 18px;
+}
+
+/* Message Editor */
+QFrame#image_edit_item {
+    border-radius: 4px;
 }
 
 QPushButton#image_edit_delete_btn {
     border-radius: 3px;
-    padding: 3px;
+    padding: 2px;
     font-size: 10px;
 }
 
@@ -394,26 +356,16 @@ QLabel#editor_role_label {
 }
 
 QTextEdit#editor_content {
-    padding: 10px;
+    padding: 8px;
     font-size: 13px;
 }
 
-/* Muted label geometry (for help text) */
+/* Labels */
 QLabel[muted="true"] {
     font-size: 11px;
 }
 
-/* Heading label geometry */
 QLabel[heading="true"] {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 600;
-}
-
-/* Splitter sizes (colors come from theme) */
-QSplitter::handle:horizontal {
-    width: 8px;
-}
-
-QSplitter::handle:vertical {
-    height: 8px;
 }

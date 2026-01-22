@@ -328,13 +328,26 @@ class ProviderDialog(QDialog):
             try:
                 import json
                 self.provider.request_format = json.loads(format_text)
-            except:
+                self._request_format_parse_error = None
+            except Exception as e:
+                # Keep it explicit for easier debugging; let _save() show a message.
                 self.provider.request_format = {}
+                self._request_format_parse_error = str(e)
         else:
             self.provider.request_format = {}
+            self._request_format_parse_error = None
     
     def _save(self):
         self._save_to_provider()
+
+        if getattr(self, '_request_format_parse_error', None):
+            QMessageBox.warning(
+                self,
+                "请求格式 JSON 无效",
+                "请求格式 (JSON) 解析失败，将不会应用这些字段。\n\n"
+                f"错误: {self._request_format_parse_error}"
+            )
+            return
         
         valid, msg = self.provider_service.validate_provider(self.provider)
         if not valid:

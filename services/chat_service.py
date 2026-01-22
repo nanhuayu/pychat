@@ -142,10 +142,46 @@ class ChatService:
 
         if isinstance(top_p, (int, float)):
             request_body["top_p"] = float(top_p)
-        
-        # Add thinking support if enabled
-        if enable_thinking and provider.supports_thinking and provider.request_format:
-            request_body.update(provider.request_format)
+
+        def _merge_request_extras(base: Dict[str, Any], extras: Any) -> None:
+            """Merge provider extra JSON fields into request body.
+
+            Debug-friendly + safer than a blind update:
+            - Only merges dict extras.
+            - Does not override core keys by default.
+            """
+
+            if not isinstance(extras, dict) or not extras:
+                return
+
+            protected_keys = {"model", "messages"}
+            skipped: Dict[str, Any] = {}
+            merged_keys: list[str] = []
+
+            for key, value in extras.items():
+                if key in protected_keys or key in base:
+                    skipped[key] = value
+                    continue
+                base[key] = value
+                merged_keys.append(key)
+
+            if log_fp:
+                try:
+                    if merged_keys:
+                        log_fp.write("[request] provider.request_format merged: " + ", ".join(sorted(merged_keys)) + "\n")
+                    if skipped:
+                        log_fp.write("[request] provider.request_format skipped: " + ", ".join(sorted(skipped.keys())) + "\n")
+                    log_fp.flush()
+                except Exception:
+                    pass
+
+        # Provider-level extra fields are ALWAYS merged.
+        # This is important for cases like {"think": false}: the caller wants to explicitly disable thinking
+        # on the server side, even when UI 'show thinking' (enable_thinking) is off.
+        _merge_request_extras(request_body, getattr(provider, 'request_format', None))
+
+        # UI thinking display is controlled by enable_thinking; request-side behavior is controlled by request_format.
+        # If a provider needs a specific key to *enable* thinking, put it into request_format (e.g. {"think": true}).
 
         if debug_log_path:
             try:

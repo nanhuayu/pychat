@@ -64,7 +64,8 @@ class ProviderDialog(QDialog):
         key_layout = QHBoxLayout()
         key_layout.addWidget(self.api_key_input)
         show_key_btn = QPushButton("👁")
-        show_key_btn.setFixedWidth(32)
+        show_key_btn.setFixedWidth(40)
+        show_key_btn.setFixedHeight(32)
         show_key_btn.setCheckable(True)
         show_key_btn.toggled.connect(
             lambda c: self.api_key_input.setEchoMode(
@@ -92,7 +93,7 @@ class ProviderDialog(QDialog):
         
         self.models_label = QLabel("未加载模型")
         self.models_label.setWordWrap(True)
-        self.models_label.setStyleSheet("color: #71717a; font-size: 11px;")
+        self.models_label.setProperty("muted", True)
         model_layout.addRow("可用模型:", self.models_label)
         
         basic_layout.addWidget(model_group)
@@ -126,7 +127,7 @@ class ProviderDialog(QDialog):
         headers_layout = QVBoxLayout(headers_group)
         
         headers_help = QLabel("添加自定义 HTTP 请求头")
-        headers_help.setStyleSheet("color: #71717a; font-size: 11px;")
+        headers_help.setProperty("muted", True)
         headers_layout.addWidget(headers_help)
         
         self.headers_table = QTableWidget(0, 2)
@@ -151,7 +152,7 @@ class ProviderDialog(QDialog):
         format_layout = QVBoxLayout(format_group)
         
         format_help = QLabel("额外的请求 JSON 字段，如思考模式配置")
-        format_help.setStyleSheet("color: #71717a; font-size: 11px;")
+        format_help.setProperty("muted", True)
         format_layout.addWidget(format_help)
         
         self.request_format_input = QTextEdit()

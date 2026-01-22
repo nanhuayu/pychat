@@ -105,8 +105,8 @@ class InputArea(QWidget):
         input_wrapper.setObjectName("input_wrapper")
         
         wrapper_layout = QVBoxLayout(input_wrapper)
-        wrapper_layout.setContentsMargins(6, 6, 6, 6)
-        wrapper_layout.setSpacing(4)
+        wrapper_layout.setContentsMargins(4, 4, 4, 4)
+        wrapper_layout.setSpacing(3)
         
         # Text input
         self.text_input = MessageTextEdit()
@@ -120,7 +120,7 @@ class InputArea(QWidget):
         
         # ===== Single-row toolbar: [📎] [Provider▾] [Model▾] [🧠] [⚙] [🔧] --- [发送] =====
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(4)
+        toolbar.setSpacing(2)
         
         # Attach button
         self.attach_btn = QToolButton()
@@ -176,7 +176,7 @@ class InputArea(QWidget):
         # Send button
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("send_btn")
-        self.send_btn.setFixedHeight(26)
+        self.send_btn.setFixedHeight(28)
         self.send_btn.clicked.connect(self._send_message)
         toolbar.addWidget(self.send_btn)
         

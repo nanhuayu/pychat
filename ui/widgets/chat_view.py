@@ -10,7 +10,7 @@ from typing import List
 from datetime import datetime
 
 from models.conversation import Message, Conversation
-from .message_widget import MessageWidget
+from .message_widget import MessageWidget, MarkdownView
 
 
 class ChatView(QWidget):
@@ -29,6 +29,8 @@ class ChatView(QWidget):
         self._streaming_thinking_btn: QPushButton = None
         self._streaming_thinking_expanded: bool = False
         self._streaming_container = None
+        self._streaming_text: str = ""
+        self._streaming_thinking_text: str = ""
         self._setup_ui()
     
     def _setup_ui(self):
@@ -98,6 +100,8 @@ class ChatView(QWidget):
         self._streaming_thinking_btn = None
         self._streaming_thinking_expanded = False
         self._streaming_container = None
+        self._streaming_text = ""
+        self._streaming_thinking_text = ""
     
     def load_conversation(self, conversation: Conversation):
         self.clear()
@@ -154,36 +158,35 @@ class ChatView(QWidget):
         self._streaming_thinking_btn.clicked.connect(self._toggle_streaming_thinking)
         container_layout.addWidget(self._streaming_thinking_btn)
 
-        self._streaming_thinking_label = QLabel("")
-        self._streaming_thinking_label.setWordWrap(True)
+        self._streaming_thinking_label = MarkdownView("")
         self._streaming_thinking_label.setObjectName("thinking_content")
         self._streaming_thinking_label.setVisible(False)
         container_layout.addWidget(self._streaming_thinking_label)
 
-        self._streaming_label = QLabel("正在生成...")
-        self._streaming_label.setWordWrap(True)
+        self._streaming_label = MarkdownView("正在生成...")
         self._streaming_label.setObjectName("message_content")
         self._streaming_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         container_layout.addWidget(self._streaming_label)
+
+        self._streaming_text = ""
+        self._streaming_thinking_text = ""
         
         self._streaming_container = container
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, container)
         QTimer.singleShot(50, self._scroll_to_bottom)
     
     def append_streaming_content(self, content: str):
-        if self._streaming_label:
-            current = self._streaming_label.text()
-            if current == "正在生成...":
-                current = ""
-            self._streaming_label.setText(current + content)
+        if self._streaming_label and content is not None:
+            self._streaming_text += str(content)
+            self._streaming_label.set_markdown(self._streaming_text or "正在生成...")
             QTimer.singleShot(10, self._scroll_to_bottom)
 
     def append_streaming_thinking(self, thinking: str):
         if not self._streaming_thinking_label or not thinking:
             return
 
-        current = self._streaming_thinking_label.text()
-        self._streaming_thinking_label.setText(current + thinking)
+        self._streaming_thinking_text += str(thinking)
+        self._streaming_thinking_label.set_markdown(self._streaming_thinking_text)
         if self._streaming_thinking_btn:
             self._streaming_thinking_btn.setVisible(True)
 
@@ -211,6 +214,8 @@ class ChatView(QWidget):
         self._streaming_thinking_label = None
         self._streaming_thinking_btn = None
         self._streaming_thinking_expanded = False
+        self._streaming_text = ""
+        self._streaming_thinking_text = ""
         self.add_message(message)
     
     def update_message(self, message: Message):

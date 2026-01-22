@@ -48,8 +48,8 @@ class Sidebar(QWidget):
         super().__init__(parent)
         self.setObjectName("sidebar")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setMinimumWidth(200)
-        self.setMaximumWidth(280)
+        self.setMinimumWidth(160)
+        self.setMaximumWidth(260)
         self._all_conversations = []
         self._setup_ui()
         

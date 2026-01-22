@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.stats_panel)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(8)
-        self.splitter.setSizes([220, 720, 220])
+        self.splitter.setSizes([180, 760, 200])
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
         
         main_layout.addWidget(self.splitter)
@@ -235,10 +235,18 @@ class MainWindow(QMainWindow):
             theme = (self._app_settings.get('theme') or 'dark').lower()
             theme_file = 'light_theme.qss' if theme == 'light' else 'dark_theme.qss'
             theme_path = os.path.join(base_dir, 'assets', 'styles', theme_file)
+            base_theme_path = os.path.join(base_dir, 'assets', 'styles', 'base.qss')
             
+            parts: list[str] = []
+            if os.path.exists(base_theme_path):
+                with open(base_theme_path, 'r', encoding='utf-8') as f:
+                    parts.append(f.read())
             if os.path.exists(theme_path):
                 with open(theme_path, 'r', encoding='utf-8') as f:
-                    self.setStyleSheet(f.read())
+                    parts.append(f.read())
+
+            if parts:
+                self.setStyleSheet("\n\n".join(parts))
         except Exception as e:
             print(f"Error loading theme: {e}")
     

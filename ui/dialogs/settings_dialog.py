@@ -49,7 +49,7 @@ class SettingsDialog(QDialog):
         layout.setSpacing(12)
         
         title = QLabel("设置")
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title.setProperty("heading", True)
         layout.addWidget(title)
         
         # Providers section
@@ -75,6 +75,14 @@ class SettingsDialog(QDialog):
         delete_btn.setProperty("danger", True)
         delete_btn.clicked.connect(self._delete_provider)
         provider_btn_layout.addWidget(delete_btn)
+
+        move_up_btn = QPushButton("上移")
+        move_up_btn.clicked.connect(lambda: self._move_provider(-1))
+        provider_btn_layout.addWidget(move_up_btn)
+
+        move_down_btn = QPushButton("下移")
+        move_down_btn.clicked.connect(lambda: self._move_provider(1))
+        provider_btn_layout.addWidget(move_down_btn)
         
         provider_btn_layout.addStretch()
         
@@ -166,6 +174,21 @@ class SettingsDialog(QDialog):
             self.providers.remove(item.provider)
             self._refresh_provider_list()
             self.providers_changed.emit()
+
+    def _move_provider(self, delta: int):
+        row = self.provider_list.currentRow()
+        if row < 0 or row >= len(self.providers):
+            QMessageBox.information(self, "提示", "请先选择一个服务商")
+            return
+
+        new_row = row + int(delta)
+        if new_row < 0 or new_row >= len(self.providers):
+            return
+
+        self.providers[row], self.providers[new_row] = self.providers[new_row], self.providers[row]
+        self._refresh_provider_list()
+        self.provider_list.setCurrentRow(new_row)
+        self.providers_changed.emit()
     
     def _add_default_providers(self):
         defaults = self.provider_service.create_default_providers()

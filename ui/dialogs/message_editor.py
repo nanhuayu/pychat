@@ -25,8 +25,8 @@ class ImageItem(QFrame):
     
     def _setup_ui(self):
         self.setFixedSize(90, 100)
-        self.setStyleSheet("QFrame { background-color: #27272a; border-radius: 6px; }")
-        
+        self.setObjectName("image_edit_item")
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
@@ -37,14 +37,7 @@ class ImageItem(QFrame):
         layout.addWidget(self.image_label)
         
         delete_btn = QPushButton("删除")
-        delete_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #dc2626; color: white;
-                border: none; border-radius: 3px;
-                padding: 3px; font-size: 10px;
-            }
-            QPushButton:hover { background-color: #ef4444; }
-        """)
+        delete_btn.setObjectName("image_edit_delete_btn")
         delete_btn.clicked.connect(lambda: self.deleteLater())
         layout.addWidget(delete_btn)
     
@@ -78,7 +71,7 @@ class MessageEditorDialog(QDialog):
         
         role_text = "你的" if self.message.role == 'user' else "助手的"
         role_label = QLabel(f"编辑{role_text}消息")
-        role_label.setStyleSheet("font-size: 13px; font-weight: 600; color: #a1a1aa;")
+        role_label.setObjectName("editor_role_label")
         layout.addWidget(role_label)
         
         layout.addWidget(QLabel("消息内容:"))
@@ -86,17 +79,7 @@ class MessageEditorDialog(QDialog):
         self.content_edit = QTextEdit()
         self.content_edit.setPlainText(self.message.content)
         self.content_edit.setMinimumHeight(150)
-        self.content_edit.setStyleSheet("""
-            QTextEdit {
-                background-color: #27272a;
-                border: 1px solid #3f3f46;
-                border-radius: 6px;
-                padding: 10px;
-                color: #e4e4e7;
-                font-size: 13px;
-            }
-            QTextEdit:focus { border-color: #6366f1; }
-        """)
+        self.content_edit.setObjectName("editor_content")
         layout.addWidget(self.content_edit)
         
         layout.addWidget(QLabel("附加图片:"))
@@ -135,14 +118,6 @@ class MessageEditorDialog(QDialog):
         
         save_btn = QPushButton("保存修改")
         save_btn.setProperty("primary", True)
-        save_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6366f1; color: white;
-                border: none; border-radius: 5px;
-                padding: 8px 16px; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #818cf8; }
-        """)
         save_btn.clicked.connect(self.accept)
         btn_layout.addWidget(save_btn)
         

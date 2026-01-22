@@ -4,10 +4,11 @@ Message widget for displaying individual messages - Responsive layout
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QFrame, QSizePolicy, QToolButton
+    QPushButton, QFrame, QSizePolicy, QToolButton, QTextBrowser, QAbstractScrollArea
 )
-from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
+from PyQt6.QtGui import QPixmap, QTextOption
+import math
 
 from models.conversation import Message
 from ui.dialogs.image_viewer import ImageViewerDialog
@@ -73,8 +74,7 @@ class ThinkingSection(QWidget):
         self.toggle_btn.clicked.connect(self._toggle)
         layout.addWidget(self.toggle_btn)
         
-        self.content_widget = QLabel(self.thinking_content)
-        self.content_widget.setWordWrap(True)
+        self.content_widget = MarkdownView(self.thinking_content)
         self.content_widget.setObjectName("thinking_content")
         self.content_widget.setVisible(False)
         layout.addWidget(self.content_widget)
@@ -182,12 +182,10 @@ class MessageWidget(QFrame):
         content_text = self.message.content
         if not isinstance(content_text, str):
             content_text = str(content_text)
-        content_label = QLabel(content_text)
-        content_label.setWordWrap(True)
-        content_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        content_label.setObjectName("message_content")
-        content_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        layout.addWidget(content_label)
+        content_view = MarkdownView(content_text)
+        content_view.setObjectName("message_content")
+        content_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        layout.addWidget(content_view)
         
         # Images
         if self.message.images:
@@ -205,3 +203,73 @@ class MessageWidget(QFrame):
     def _open_image_preview(self, image_data: str):
         dialog = ImageViewerDialog(image_data, self)
         dialog.exec()
+
+
+class MarkdownView(QTextBrowser):
+    """A compact, auto-height markdown-capable viewer.
+
+    Rationale:
+    - QLabel wordWrap won't break very long runs (JSON/base64/stream chunks).
+    - QTextBrowser can wrap anywhere and render Markdown via QTextDocument.
+    - Auto height avoids nested scrollbars inside message bubbles.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setOpenExternalLinks(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+
+        doc = self.document()
+        opt = doc.defaultTextOption()
+        opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        doc.setDefaultTextOption(opt)
+        doc.setDocumentMargin(0)
+
+        try:
+            doc.documentLayout().documentSizeChanged.connect(lambda *_: self._schedule_update_height())
+        except Exception:
+            pass
+
+        self.set_markdown(text)
+
+    def set_markdown(self, text: str) -> None:
+        if text is None:
+            text = ""
+        if not isinstance(text, str):
+            text = str(text)
+
+        try:
+            self.document().setMarkdown(text)
+        except Exception:
+            self.setPlainText(text)
+        self._schedule_update_height()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_update_height()
+
+    def _schedule_update_height(self) -> None:
+        # Defer to next event loop so QTextDocument finishes layout.
+        QTimer.singleShot(0, self._update_height)
+
+    def _update_height(self, *_args) -> None:
+        try:
+            # Ensure the document is laid out to the current viewport width.
+            w = max(1, self.viewport().width())
+            self.document().setTextWidth(w)
+
+            size = self.document().documentLayout().documentSize()
+            h = int(math.ceil(size.height()))
+        except Exception:
+            h = 0
+
+        # Extra padding avoids clipping on some fonts/styles (dark theme was affected).
+        target = max(18, h + 12)
+        if self.height() != target:
+            self.setFixedHeight(target)

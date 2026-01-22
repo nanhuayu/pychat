@@ -288,6 +288,7 @@ class MainWindow(QMainWindow):
         self.current_conversation = Conversation()
         self.chat_view.clear()
         self.stats_panel.update_stats(None)
+        self.chat_view.update_header(provider_name="", model="", msg_count=0)
     
     def _import_conversation(self, file_path: str):
         conversation = self.storage.import_conversation(file_path)
@@ -557,6 +558,18 @@ class MainWindow(QMainWindow):
             self.chat_view.remove_message(message_id)
             self.stats_panel.update_stats(self.current_conversation)
             self.storage.save_conversation(self.current_conversation)
+
+            provider_name = ""
+            if self.current_conversation.provider_id:
+                for p in self.providers:
+                    if p.id == self.current_conversation.provider_id:
+                        provider_name = p.name
+                        break
+            self.chat_view.update_header(
+                provider_name=provider_name,
+                model=self.current_conversation.model or "",
+                msg_count=len(self.current_conversation.messages)
+            )
     
     def _open_provider_settings(self):
         """Quick access to configure the currently selected provider"""

@@ -228,6 +228,7 @@ QLabel#message_role {
 
 QTextBrowser#message_content {
     font-size: 13px;
+    border: none;
 }
 
 QLabel#message_badge {
@@ -237,6 +238,7 @@ QLabel#message_badge {
 }
 
 QToolButton#msg_edit_btn,
+QToolButton#msg_copy_btn,
 QToolButton#msg_delete_btn {
     border-radius: 4px;
     font-size: 13px;

@@ -5,6 +5,8 @@ Main application window - Chinese UI with fixed streaming
 import asyncio
 import os
 import threading
+import uuid
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QMessageBox
@@ -81,6 +83,7 @@ class MainWindow(QMainWindow):
         self.sidebar.new_conversation.connect(self._new_conversation)
         self.sidebar.import_conversation.connect(self._import_conversation)
         self.sidebar.delete_conversation.connect(self._delete_conversation)
+        self.sidebar.duplicate_conversation.connect(self._duplicate_conversation)
         
         # Chat area
         chat_widget = QWidget()
@@ -306,6 +309,31 @@ class MainWindow(QMainWindow):
                 self.current_conversation = None
                 self.chat_view.clear()
                 self.stats_panel.update_stats(None)
+
+    def _duplicate_conversation(self, conversation_id: str) -> None:
+        src = self.storage.load_conversation(conversation_id)
+        if not src:
+            QMessageBox.warning(self, "复制失败", "未找到要复制的会话")
+            return
+
+        # Deep copy via dict roundtrip (keeps messages/settings intact)
+        dup = Conversation.from_dict(src.to_dict())
+        dup.id = str(uuid.uuid4())
+        now = datetime.now()
+        dup.created_at = now
+        dup.updated_at = now
+
+        base_title = (src.title or "New Chat").strip() or "New Chat"
+        dup.title = f"{base_title}（副本）"
+
+        if not self.storage.save_conversation(dup):
+            QMessageBox.warning(self, "复制失败", "保存会话副本失败")
+            return
+
+        conversations = self.storage.list_conversations()
+        self.sidebar.update_conversations(conversations)
+        self.sidebar.select_conversation(dup.id)
+        self._on_conversation_selected(dup.id)
     
     def _send_message(self, content: str, images: list):
         if self._is_streaming:

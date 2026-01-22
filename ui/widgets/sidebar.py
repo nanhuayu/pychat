@@ -43,6 +43,7 @@ class Sidebar(QWidget):
     new_conversation = pyqtSignal()
     import_conversation = pyqtSignal(str)
     delete_conversation = pyqtSignal(str)
+    duplicate_conversation = pyqtSignal(str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -136,6 +137,14 @@ class Sidebar(QWidget):
             return
         
         menu = QMenu(self)
+
+        duplicate_action = QAction("复制会话", self)
+        duplicate_action.triggered.connect(
+            lambda: self.duplicate_conversation.emit(item.data.get('id', ''))
+        )
+        menu.addAction(duplicate_action)
+        menu.addSeparator()
+
         delete_action = QAction("删除", self)
         delete_action.triggered.connect(
             lambda: self._confirm_delete(item.data.get('id', ''))

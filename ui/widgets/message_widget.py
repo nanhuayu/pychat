@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QFrame, QSizePolicy, QToolButton, QTextBrowser, QAbstractScrollArea
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
-from PyQt6.QtGui import QPixmap, QTextOption
+from PyQt6.QtGui import QPixmap, QTextOption, QGuiApplication
 import math
 
 from models.conversation import Message
@@ -154,6 +154,15 @@ class MessageWidget(QFrame):
             header.addWidget(time_label)
         
         header.addStretch()
+
+        copy_btn = QToolButton()
+        copy_btn.setText("⧉")
+        copy_btn.setToolTip("复制原文")
+        copy_btn.setFixedSize(26, 22)
+        copy_btn.setObjectName("msg_copy_btn")
+        copy_btn.clicked.connect(self._copy_original_content)
+        self._copy_btn = copy_btn
+        header.addWidget(copy_btn)
         
         # Compact action buttons (icon-only)
         edit_btn = QToolButton()
@@ -197,6 +206,25 @@ class MessageWidget(QFrame):
                 images_layout.addWidget(thumb)
             images_layout.addStretch()
             layout.addLayout(images_layout)
+
+    def _copy_original_content(self) -> None:
+        text = self.message.content
+        if text is None:
+            text = ""
+        if not isinstance(text, str):
+            text = str(text)
+
+        try:
+            QGuiApplication.clipboard().setText(text)
+        except Exception:
+            return
+
+        try:
+            if hasattr(self, "_copy_btn") and self._copy_btn:
+                self._copy_btn.setToolTip("已复制")
+                QTimer.singleShot(1200, lambda: self._copy_btn.setToolTip("复制原文"))
+        except Exception:
+            pass
         
 
 

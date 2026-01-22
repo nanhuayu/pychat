@@ -148,6 +148,49 @@ QPushButton#import_btn:hover {
     background-color: #1a1b1e;
 }
 
+/* Chat Header Bar */
+#chat_header {
+    background-color: #18181b;
+    border-bottom: 1px solid #27272a;
+}
+
+QLabel#model_indicator {
+    color: #a1a1aa;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QLabel#context_indicator {
+    color: #71717a;
+    font-size: 11px;
+}
+
+/* Per-conversation quick controls (input top row) */
+QToolButton#toolbar_btn,
+QToolButton#thinking_quick_toggle,
+QToolButton#conversation_settings_btn {
+    background-color: rgba(63, 63, 70, 0.35);
+    color: #e4e4e7;
+    border: 1px solid rgba(63, 63, 70, 0.6);
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-width: 24px;
+    min-height: 22px;
+}
+
+QToolButton#toolbar_btn:hover,
+QToolButton#thinking_quick_toggle:hover,
+QToolButton#conversation_settings_btn:hover {
+    background-color: rgba(82, 82, 91, 0.6);
+}
+
+QToolButton#toolbar_btn:checked,
+QToolButton#thinking_quick_toggle:checked {
+    background-color: rgba(99, 102, 241, 0.35);
+    border-color: rgba(99, 102, 241, 0.75);
+    color: #ffffff;
+}
+
 #messages_scroll {
     background-color: #18181b;
     border: none;

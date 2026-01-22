@@ -104,21 +104,56 @@ class ChatService:
                 log_fp = None
         
         # Build messages for API
-        api_messages = self._build_api_messages(conversation.messages, provider)
+        conv_settings = conversation.settings or {}
+
+        max_ctx = conv_settings.get('max_context_messages')
+        if isinstance(max_ctx, int) and max_ctx > 0:
+            base_messages = conversation.messages[-max_ctx:]
+        else:
+            base_messages = conversation.messages
+
+        api_messages = self._build_api_messages(base_messages, provider)
+
+        system_prompt = conv_settings.get('system_prompt')
+        if isinstance(system_prompt, str) and system_prompt.strip():
+            # Avoid duplicating if conversation already contains system messages.
+            if not any(m.get('role') == 'system' for m in api_messages if isinstance(m, dict)):
+                api_messages = [{'role': 'system', 'content': system_prompt.strip()}] + api_messages
         
         # Build request body
+        # Conversation-level settings with sensible defaults
+        stream_enabled = conv_settings.get('stream', True)
+        temperature = conv_settings.get('temperature', 0.7)
+        top_p = conv_settings.get('top_p')
+        max_tokens = conv_settings.get('max_tokens', 4096)
+
+        try:
+            stream_enabled = bool(stream_enabled)
+        except Exception:
+            stream_enabled = True
+
         request_body = {
             "model": conversation.model or provider.default_model,
             "messages": api_messages,
-            "max_tokens": provider.max_tokens,
-            "temperature": provider.temperature,
-            "stream": True
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": stream_enabled
         }
+
+        if isinstance(top_p, (int, float)):
+            request_body["top_p"] = float(top_p)
         
         # Add thinking support if enabled
         if enable_thinking and provider.supports_thinking and provider.request_format:
             request_body.update(provider.request_format)
-        open("debug_request.json", "w", encoding="utf-8").write(json.dumps(request_body, ensure_ascii=False, indent=2))
+
+        if debug_log_path:
+            try:
+                open("debug_request.json", "w", encoding="utf-8").write(
+                    json.dumps(request_body, ensure_ascii=False, indent=2)
+                )
+            except Exception:
+                pass
         response_content = ""
         thinking_content = ""
         tokens_used = 0
@@ -153,6 +188,79 @@ class ChatService:
             timeout_config = httpx.Timeout(self.timeout, connect=30.0)
             
             async with httpx.AsyncClient(timeout=timeout_config) as client:
+                # Non-stream mode
+                if not request_body.get('stream', True):
+                    resp = await client.post(
+                        provider.get_chat_endpoint(),
+                        headers=provider.get_headers(),
+                        json=request_body
+                    )
+
+                    if resp.status_code >= 400:
+                        payload = None
+                        try:
+                            payload = resp.json()
+                        except Exception:
+                            payload = None
+                        text = ""
+                        try:
+                            text = (resp.text or "").strip()
+                        except Exception:
+                            text = ""
+
+                        response_content = _format_http_error(resp.status_code, payload, text)
+                        if on_token:
+                            on_token(response_content)
+                    else:
+                        payload = resp.json()
+                        choices = payload.get('choices', []) if isinstance(payload, dict) else []
+                        if choices:
+                            msg = choices[0].get('message', {}) or {}
+                            content = msg.get('content', '') or ''
+                            visible, embedded_thinking = thinking_parser.feed(content)
+                            response_content += visible
+
+                            thinking = (
+                                msg.get('thinking', '')
+                                or msg.get('reasoning', '')
+                                or msg.get('reasoning_content', '')
+                                or msg.get('thinking_content', '')
+                                or msg.get('thoughts', '')
+                                or msg.get('thought', '')
+                            )
+                            if enable_thinking:
+                                if embedded_thinking:
+                                    thinking_content += embedded_thinking
+                                if thinking:
+                                    thinking_content += thinking
+                        else:
+                            response_content = _pretty_json(payload)
+
+                        if on_token and response_content:
+                            on_token(response_content)
+
+                    # finalize for non-stream
+                    end_time = time.time()
+                    response_time_ms = int((end_time - start_time) * 1000)
+                    if tokens_used == 0 and response_content:
+                        tokens_used = self._estimate_tokens(response_content)
+                    response_message = Message(
+                        role="assistant",
+                        content=response_content,
+                        thinking=thinking_content if thinking_content else None,
+                        tokens=tokens_used,
+                        response_time_ms=response_time_ms
+                    )
+                    try:
+                        response_message.metadata.update({
+                            'provider_id': getattr(provider, 'id', ''),
+                            'provider_name': getattr(provider, 'name', ''),
+                            'model': request_body.get('model') if isinstance(request_body, dict) else (conversation.model or provider.default_model),
+                        })
+                    except Exception:
+                        pass
+                    return response_message
+
                 # Use streaming request
                 async with client.stream(
                     'POST',
@@ -344,6 +452,16 @@ class ChatService:
             tokens=tokens_used,
             response_time_ms=response_time_ms
         )
+
+        # Record which provider/model produced this message for UI display.
+        try:
+            response_message.metadata.update({
+                'provider_id': getattr(provider, 'id', ''),
+                'provider_name': getattr(provider, 'name', ''),
+                'model': request_body.get('model') if isinstance(request_body, dict) else (conversation.model or provider.default_model),
+            })
+        except Exception:
+            pass
         
         return response_message
     

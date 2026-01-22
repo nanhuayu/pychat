@@ -99,6 +99,11 @@ class MessageWidget(QFrame):
     def _setup_ui(self):
         is_user = self.message.role == 'user'
 
+        def _shorten(text: str, max_len: int = 22) -> str:
+            if not text:
+                return ""
+            return text if len(text) <= max_len else (text[: max_len - 1] + "…")
+
         # Themeable styling via QSS
         self.setObjectName("message_widget")
         self.setProperty("role", "user" if is_user else "assistant")
@@ -117,6 +122,25 @@ class MessageWidget(QFrame):
         role_label = QLabel("你" if is_user else "助手")
         role_label.setObjectName("message_role")
         header.addWidget(role_label)
+
+        # Model + timestamp (from metadata / created_at)
+        model = None
+        if isinstance(self.message.metadata, dict):
+            model = self.message.metadata.get('model') or self.message.metadata.get('model_name')
+        if model:
+            model_label = QLabel(_shorten(str(model)))
+            model_label.setObjectName("message_badge")
+            model_label.setToolTip(str(model))
+            header.addWidget(model_label)
+
+        try:
+            ts = self.message.created_at.strftime('%m-%d %H:%M')
+        except Exception:
+            ts = ""
+        if ts:
+            ts_label = QLabel(ts)
+            ts_label.setObjectName("message_badge")
+            header.addWidget(ts_label)
         
         # Stats - compact badges
         if self.message.tokens:
@@ -133,7 +157,7 @@ class MessageWidget(QFrame):
         
         # Compact action buttons (icon-only)
         edit_btn = QToolButton()
-        edit_btn.setText("✎")
+        edit_btn.setText("🖊")
         edit_btn.setToolTip("编辑")
         edit_btn.setFixedSize(26, 22)
         edit_btn.setObjectName("msg_edit_btn")

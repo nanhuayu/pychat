@@ -3,10 +3,11 @@ Chat view widget - Compact responsive layout
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QScrollArea, QLabel, QFrame, QSizePolicy, QPushButton
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QFrame, QSizePolicy, QPushButton
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from typing import List
+from datetime import datetime
 
 from models.conversation import Message, Conversation
 from .message_widget import MessageWidget
@@ -35,6 +36,28 @@ class ChatView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
+        # ===== Header bar with model indicator =====
+        self.header_bar = QFrame()
+        self.header_bar.setObjectName("chat_header")
+        self.header_bar.setFixedHeight(32)
+        
+        header_layout = QHBoxLayout(self.header_bar)
+        header_layout.setContentsMargins(10, 0, 10, 0)
+        header_layout.setSpacing(6)
+        
+        self.model_indicator = QLabel("未选择模型")
+        self.model_indicator.setObjectName("model_indicator")
+        header_layout.addWidget(self.model_indicator)
+        
+        header_layout.addStretch()
+        
+        self.context_indicator = QLabel("")
+        self.context_indicator.setObjectName("context_indicator")
+        header_layout.addWidget(self.context_indicator)
+        
+        layout.addWidget(self.header_bar)
+        
+        # ===== Messages scroll area =====
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("messages_scroll")
         self.scroll_area.setWidgetResizable(True)
@@ -49,6 +72,20 @@ class ChatView(QWidget):
         
         self.scroll_area.setWidget(self.messages_container)
         layout.addWidget(self.scroll_area)
+    
+    def update_header(self, provider_name: str = "", model: str = "", msg_count: int = 0):
+        """Update header bar with current model info"""
+        if provider_name and model:
+            self.model_indicator.setText(f"🤖 {model} | {provider_name}")
+        elif model:
+            self.model_indicator.setText(f"🤖 {model}")
+        else:
+            self.model_indicator.setText("未选择模型")
+        
+        if msg_count > 0:
+            self.context_indicator.setText(f"📝 {msg_count} 条消息")
+        else:
+            self.context_indicator.setText("")
     
     def clear(self):
         while self.messages_layout.count() > 1:
@@ -77,7 +114,7 @@ class ChatView(QWidget):
         self._message_widgets.append(widget)
         QTimer.singleShot(50, self._scroll_to_bottom)
     
-    def start_streaming_response(self):
+    def start_streaming_response(self, model: str = ""):
         if self._streaming_label:
             return
         
@@ -89,9 +126,26 @@ class ChatView(QWidget):
         container_layout.setContentsMargins(10, 8, 10, 8)
         container_layout.setSpacing(4)
         
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+
         role_label = QLabel("助手")
         role_label.setObjectName("message_role")
-        container_layout.addWidget(role_label)
+        header_row.addWidget(role_label)
+
+        if model:
+            model_label = QLabel(model)
+            model_label.setObjectName("message_badge")
+            model_label.setToolTip(model)
+            header_row.addWidget(model_label)
+
+        ts = datetime.now().strftime('%m-%d %H:%M')
+        ts_label = QLabel(ts)
+        ts_label.setObjectName("message_badge")
+        header_row.addWidget(ts_label)
+
+        header_row.addStretch()
+        container_layout.addLayout(header_row)
 
         # Thinking (streaming) - collapsible (show above content)
         self._streaming_thinking_btn = QPushButton("思考")

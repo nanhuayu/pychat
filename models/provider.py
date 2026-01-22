@@ -21,8 +21,6 @@ class Provider:
     request_format: Dict[str, Any] = field(default_factory=dict)
     supports_thinking: bool = False
     supports_vision: bool = True
-    max_tokens: int = 4096
-    temperature: float = 0.7
     enabled: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
@@ -38,8 +36,6 @@ class Provider:
             'request_format': self.request_format,
             'supports_thinking': self.supports_thinking,
             'supports_vision': self.supports_vision,
-            'max_tokens': self.max_tokens,
-            'temperature': self.temperature,
             'enabled': self.enabled
         }
 
@@ -57,8 +53,6 @@ class Provider:
             request_format=data.get('request_format', {}),
             supports_thinking=data.get('supports_thinking', False),
             supports_vision=data.get('supports_vision', True),
-            max_tokens=data.get('max_tokens', 4096),
-            temperature=data.get('temperature', 0.7),
             enabled=data.get('enabled', True)
         )
 

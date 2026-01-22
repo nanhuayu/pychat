@@ -264,6 +264,27 @@ QSplitter::handle:hover {
     border-top: 1px solid #e5e7eb;
 }
 
+QToolButton#thinking_quick_toggle,
+QToolButton#conversation_settings_btn {
+    background-color: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 3px 8px;
+    min-height: 20px;
+    color: #111827;
+}
+
+QToolButton#thinking_quick_toggle:hover,
+QToolButton#conversation_settings_btn:hover {
+    background-color: #f3f4f6;
+}
+
+QToolButton#thinking_quick_toggle:checked {
+    background-color: #eef2ff;
+    border-color: #c7d2fe;
+    color: #111827;
+}
+
 #input_wrapper {
     background-color: #ffffff;
     border: 1px solid #e5e7eb;

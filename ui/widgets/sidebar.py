@@ -10,18 +10,30 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QAction
 from typing import Dict, Any, List
+from datetime import datetime
 
 
 class ConversationItem(QListWidgetItem):
-    """Custom list item for conversations"""
+    """Custom list item for conversations - compact display"""
     
     def __init__(self, data: Dict[str, Any]):
         super().__init__()
         self.data = data
-        self.setText(data.get('title', '无标题'))
-        model = data.get('model', '未知')
+        title = data.get('title', '无标题')
+        model = data.get('model', '')
+        updated_at = data.get('updated_at') or data.get('created_at')
+        updated_str = ""
+        if isinstance(updated_at, str) and updated_at:
+            try:
+                dt = datetime.fromisoformat(updated_at)
+                updated_str = dt.strftime('%m-%d %H:%M')
+            except Exception:
+                updated_str = ""
+
+        # Only show title + time (no model for compact view)
+        self.setText(title + ("\n" + updated_str if updated_str else ""))
         count = data.get('message_count', 0)
-        self.setToolTip(f"模型: {model}\n消息: {count} 条")
+        self.setToolTip(f"模型: {model or '未设置'}\n消息: {count} 条\n更新: {updated_str}")
 
 
 class Sidebar(QWidget):

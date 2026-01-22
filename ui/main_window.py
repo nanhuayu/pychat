@@ -25,6 +25,7 @@ from .widgets.input_area import InputArea
 from .widgets.stats_panel import StatsPanel
 from .dialogs.settings_dialog import SettingsDialog
 from .dialogs.message_editor import MessageEditorDialog
+from .dialogs.conversation_settings_dialog import ConversationSettingsDialog
 
 
 class StreamingSignals(QObject):
@@ -95,6 +96,9 @@ class MainWindow(QMainWindow):
         
         self.input_area = InputArea()
         self.input_area.message_sent.connect(self._send_message)
+        self.input_area.conversation_settings_requested.connect(self._open_conversation_settings)
+        self.input_area.provider_settings_requested.connect(self._open_provider_settings)
+        self.input_area.show_thinking_changed.connect(self._on_conversation_show_thinking_changed)
 
         # Vertical splitter: message area <-> input area (user-resizable)
         self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -245,15 +249,29 @@ class MainWindow(QMainWindow):
             self.chat_view.load_conversation(conversation)
             self.stats_panel.update_stats(conversation)
 
+            # Sync per-conversation toggles
+            show_thinking_default = bool(self._app_settings.get('show_thinking', True))
+            show_thinking = bool((conversation.settings or {}).get('show_thinking', show_thinking_default))
+            self.input_area.set_show_thinking(show_thinking)
+
             # Sync provider first (so model list is populated), then sync model.
+            provider_name = ""
             if conversation.provider_id:
                 for i, provider in enumerate(self.providers):
                     if provider.id == conversation.provider_id:
                         self.input_area.provider_combo.setCurrentIndex(i)
+                        provider_name = provider.name
                         break
 
             if conversation.model:
                 self.input_area.model_combo.setCurrentText(conversation.model)
+            
+            # Update chat header
+            self.chat_view.update_header(
+                provider_name=provider_name,
+                model=conversation.model or "",
+                msg_count=len(conversation.messages)
+            )
     
     def _new_conversation(self):
         self.current_conversation = Conversation()
@@ -308,6 +326,11 @@ class MainWindow(QMainWindow):
         self.current_conversation.provider_id = provider_id
         self.current_conversation.model = model
 
+        # Ensure conversation settings exists and has defaults.
+        if self.current_conversation.settings is None:
+            self.current_conversation.settings = {}
+        self.current_conversation.settings.setdefault('show_thinking', bool(self._app_settings.get('show_thinking', True)))
+
         # Keep UI (stats panel) in sync with the latest selection.
         self.stats_panel.update_stats(self.current_conversation)
 
@@ -321,6 +344,11 @@ class MainWindow(QMainWindow):
             return
         
         user_message = Message(role="user", content=content, images=images)
+        user_message.metadata.update({
+            'provider_id': provider_id,
+            'provider_name': getattr(provider, 'name', ''),
+            'model': model,
+        })
         self.current_conversation.add_message(user_message)
         
         if len(self.current_conversation.messages) == 1:
@@ -338,7 +366,7 @@ class MainWindow(QMainWindow):
     def _start_streaming(self, provider: Provider):
         self._is_streaming = True
         self.input_area.set_enabled(False)
-        self.chat_view.start_streaming_response()
+        self.chat_view.start_streaming_response(model=(self.current_conversation.model or provider.default_model))
         
         conversation = self.current_conversation
         signals = self._signals
@@ -361,7 +389,7 @@ class MainWindow(QMainWindow):
                         provider, conversation,
                         on_token=lambda t: signals.token_received.emit(t),
                         on_thinking=lambda t: signals.thinking_received.emit(t),
-                        enable_thinking=bool(self._app_settings.get('show_thinking', True)),
+                        enable_thinking=bool((conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True))),
                         debug_log_path=debug_log_path
                     )
                 
@@ -381,8 +409,47 @@ class MainWindow(QMainWindow):
 
     def _on_thinking_received(self, thinking: str):
         """Handle thinking received during streaming - called from main thread"""
-        if bool(self._app_settings.get('show_thinking', True)):
+        if not self.current_conversation:
+            return
+        if bool((self.current_conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True))):
             self.chat_view.append_streaming_thinking(thinking)
+
+    def _open_conversation_settings(self):
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+
+        dlg = ConversationSettingsDialog(
+            self.current_conversation,
+            providers=self.providers,
+            default_show_thinking=bool(self._app_settings.get('show_thinking', True)),
+            parent=self
+        )
+        if dlg.exec():
+            dlg.apply_to_conversation()
+            self.storage.save_conversation(self.current_conversation)
+            self.stats_panel.update_stats(self.current_conversation)
+
+            # Sync input area with updated provider/model
+            if self.current_conversation.provider_id:
+                for i, p in enumerate(self.providers):
+                    if p.id == self.current_conversation.provider_id:
+                        self.input_area.provider_combo.setCurrentIndex(i)
+                        break
+            if self.current_conversation.model:
+                self.input_area.model_combo.setCurrentText(self.current_conversation.model)
+            self.input_area.set_show_thinking(bool((self.current_conversation.settings or {}).get('show_thinking', True)))
+
+            conversations = self.storage.list_conversations()
+            self.sidebar.update_conversations(conversations)
+            self.sidebar.select_conversation(self.current_conversation.id)
+
+    def _on_conversation_show_thinking_changed(self, enabled: bool):
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+        if self.current_conversation.settings is None:
+            self.current_conversation.settings = {}
+        self.current_conversation.settings['show_thinking'] = bool(enabled)
+        self.storage.save_conversation(self.current_conversation)
     
     def _on_response_complete(self, response):
         """Handle response completion - called from main thread"""
@@ -394,6 +461,19 @@ class MainWindow(QMainWindow):
             self.chat_view.finish_streaming_response(response)
             self.stats_panel.update_stats(self.current_conversation)
             self.storage.save_conversation(self.current_conversation)
+            
+            # Update chat header with new message count
+            provider_name = ""
+            if self.current_conversation.provider_id:
+                for p in self.providers:
+                    if p.id == self.current_conversation.provider_id:
+                        provider_name = p.name
+                        break
+            self.chat_view.update_header(
+                provider_name=provider_name,
+                model=self.current_conversation.model or "",
+                msg_count=len(self.current_conversation.messages)
+            )
     
     def _on_response_error(self, error: str):
         """Handle response error - called from main thread"""
@@ -441,6 +521,38 @@ class MainWindow(QMainWindow):
             self.chat_view.remove_message(message_id)
             self.stats_panel.update_stats(self.current_conversation)
             self.storage.save_conversation(self.current_conversation)
+    
+    def _open_provider_settings(self):
+        """Quick access to configure the currently selected provider"""
+        provider_id = self.input_area.get_selected_provider_id()
+        provider = None
+        provider_index = 0
+        for i, p in enumerate(self.providers):
+            if p.id == provider_id:
+                provider = p
+                provider_index = i
+                break
+        
+        if not provider and self.providers:
+            provider = self.providers[0]
+            provider_index = 0
+        
+        from ui.dialogs.provider_dialog import ProviderDialog
+        dialog = ProviderDialog(provider, parent=self)
+        dialog.setWindowTitle(f"配置服务商 - {provider.name if provider else '新建'}")
+        if dialog.exec():
+            updated_provider = dialog.get_provider()
+            if provider:
+                self.providers[provider_index] = updated_provider
+            else:
+                self.providers.append(updated_provider)
+            self.storage.save_providers(self.providers)
+            self.input_area.set_providers(self.providers)
+            # Re-select the provider
+            for i, p in enumerate(self.providers):
+                if p.id == updated_provider.id:
+                    self.input_area.provider_combo.setCurrentIndex(i)
+                    break
     
     def _open_settings(self):
         dialog = SettingsDialog(self.providers, current_settings=self._app_settings, parent=self)

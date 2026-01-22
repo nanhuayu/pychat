@@ -95,17 +95,6 @@ class ProviderDialog(QDialog):
         self.models_label.setStyleSheet("color: #71717a; font-size: 11px;")
         model_layout.addRow("可用模型:", self.models_label)
         
-        self.max_tokens_input = QSpinBox()
-        self.max_tokens_input.setRange(1, 128000)
-        self.max_tokens_input.setValue(4096)
-        model_layout.addRow("最大 Token:", self.max_tokens_input)
-        
-        self.temperature_input = QDoubleSpinBox()
-        self.temperature_input.setRange(0.0, 2.0)
-        self.temperature_input.setSingleStep(0.1)
-        self.temperature_input.setValue(0.7)
-        model_layout.addRow("Temperature:", self.temperature_input)
-        
         basic_layout.addWidget(model_group)
         
         # Capabilities
@@ -205,8 +194,6 @@ class ProviderDialog(QDialog):
         self.name_input.setText(self.provider.name)
         self.api_base_input.setText(self.provider.api_base)
         self.api_key_input.setText(self.provider.api_key)
-        self.max_tokens_input.setValue(self.provider.max_tokens)
-        self.temperature_input.setValue(self.provider.temperature)
         self.supports_vision_check.setChecked(self.provider.supports_vision)
         self.supports_thinking_check.setChecked(self.provider.supports_thinking)
         self.enabled_check.setChecked(self.provider.enabled)
@@ -321,8 +308,6 @@ class ProviderDialog(QDialog):
         self.provider.api_base = self.api_base_input.text().strip()
         self.provider.api_key = self.api_key_input.text().strip()
         self.provider.default_model = self.model_combo.currentText().strip()
-        self.provider.max_tokens = self.max_tokens_input.value()
-        self.provider.temperature = self.temperature_input.value()
         self.provider.supports_vision = self.supports_vision_check.isChecked()
         self.provider.supports_thinking = self.supports_thinking_check.isChecked()
         self.provider.enabled = self.enabled_check.isChecked()

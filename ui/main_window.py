@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self.chat_view = ChatView()
         self.chat_view.edit_message.connect(self._edit_message)
         self.chat_view.delete_message.connect(self._delete_message)
+        self.chat_view.images_dropped.connect(self._on_images_dropped)
         
         self.input_area = InputArea()
         self.input_area.message_sent.connect(self._send_message)
@@ -114,10 +115,10 @@ class MainWindow(QMainWindow):
         self.chat_splitter.splitterMoved.connect(self._on_chat_splitter_moved)
 
         chat_layout.addWidget(self.chat_splitter, stretch=1)
-        
+
         # Stats panel
         self.stats_panel = StatsPanel()
-        
+
         # Splitter
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setObjectName("main_splitter")
@@ -129,9 +130,16 @@ class MainWindow(QMainWindow):
         self.splitter.setHandleWidth(8)
         self.splitter.setSizes([180, 760, 200])
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
-        
+
         main_layout.addWidget(self.splitter)
         self._create_menu_bar()
+
+    def _on_images_dropped(self, image_sources: list) -> None:
+        # Forward images dropped onto the chat area into the input area's attachments.
+        try:
+            self.input_area.add_images(image_sources)
+        except Exception:
+            pass
     
     def _create_menu_bar(self):
         menubar = self.menuBar()

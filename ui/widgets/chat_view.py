@@ -5,12 +5,13 @@ Chat view widget - Compact responsive layout
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QFrame, QSizePolicy, QPushButton, QToolButton
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QEvent
 from typing import List
 from datetime import datetime
 
 from models.conversation import Message, Conversation
 from .message_widget import MessageWidget, MarkdownView
+from ui.utils.image_utils import extract_images_from_mime, extract_images_from_clipboard
 
 
 class ChatView(QWidget):
@@ -18,6 +19,7 @@ class ChatView(QWidget):
     
     edit_message = pyqtSignal(str)
     delete_message = pyqtSignal(str)
+    images_dropped = pyqtSignal(list)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,6 +95,15 @@ class ChatView(QWidget):
         self.scroll_area.setWidget(self.messages_container)
         layout.addWidget(self.scroll_area)
 
+        # Allow dropping images anywhere in the chat area (message list viewport)
+        try:
+            self.scroll_area.setAcceptDrops(True)
+            self.scroll_area.viewport().setAcceptDrops(True)
+            self.scroll_area.viewport().installEventFilter(self)
+            self.scroll_area.viewport().setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        except Exception:
+            pass
+
         # Debounced nav state updates (scrolling can emit valueChanged frequently)
         self._nav_update_timer = QTimer(self)
         self._nav_update_timer.setSingleShot(True)
@@ -100,6 +111,42 @@ class ChatView(QWidget):
         self.scroll_area.verticalScrollBar().valueChanged.connect(self._schedule_nav_update)
 
         self._update_nav_state()
+
+    def eventFilter(self, watched, event):
+        # Handle drag/drop on the scroll area viewport (the actual visible chat area).
+        try:
+            if watched == self.scroll_area.viewport():
+                if event.type() == QEvent.Type.KeyPress:
+                    # Allow pasting screenshot images when focus is on the chat area.
+                    try:
+                        key = event.key()
+                        mods = event.modifiers()
+                        if key == Qt.Key.Key_V and (mods & Qt.KeyboardModifier.ControlModifier):
+                            sources = extract_images_from_clipboard()
+                            if sources:
+                                self.images_dropped.emit(sources)
+                                return True
+                    except Exception:
+                        pass
+
+                if event.type() == QEvent.Type.DragEnter:
+                    md = event.mimeData()
+                    data_urls, file_paths = extract_images_from_mime(md)
+                    if data_urls or file_paths:
+                        event.acceptProposedAction()
+                        return True
+                elif event.type() == QEvent.Type.Drop:
+                    md = event.mimeData()
+                    data_urls, file_paths = extract_images_from_mime(md)
+                    sources = data_urls + file_paths
+                    if sources:
+                        event.acceptProposedAction()
+                        self.images_dropped.emit(sources)
+                        return True
+        except Exception:
+            pass
+
+        return super().eventFilter(watched, event)
 
     def _create_nav_button(self, text: str, tooltip: str) -> QToolButton:
         btn = QToolButton()

@@ -8,10 +8,13 @@ from PyQt6.QtWidgets import (
     QFrame, QSizePolicy, QToolButton
 )
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QPixmap
+from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent
 import base64
 import os
 from typing import List
+
+from ui.utils.image_loader import load_pixmap
+from ui.utils.image_utils import extract_images_from_mime
 
 
 class ImagePreviewItem(QFrame):
@@ -19,9 +22,9 @@ class ImagePreviewItem(QFrame):
     
     remove_requested = pyqtSignal(str)
     
-    def __init__(self, image_path: str, parent=None):
+    def __init__(self, image_source: str, parent=None):
         super().__init__(parent)
-        self.image_path = image_path
+        self.image_source = image_source
         self._setup_ui()
     
     def _setup_ui(self):
@@ -34,7 +37,7 @@ class ImagePreviewItem(QFrame):
         
         thumb = QLabel()
         thumb.setObjectName("image_thumb")
-        pixmap = QPixmap(self.image_path)
+        pixmap = load_pixmap(self.image_source)
         if not pixmap.isNull():
             scaled = pixmap.scaled(38, 30, Qt.AspectRatioMode.KeepAspectRatio,
                                    Qt.TransformationMode.SmoothTransformation)
@@ -47,7 +50,7 @@ class ImagePreviewItem(QFrame):
         remove_btn = QPushButton("×")
         remove_btn.setObjectName("image_remove_btn")
         remove_btn.setFixedSize(12, 12)
-        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.image_path))
+        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.image_source))
         layout.addWidget(remove_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
 
@@ -55,10 +58,26 @@ class MessageTextEdit(QTextEdit):
     """Custom text edit with Ctrl+Enter to send"""
     
     send_requested = pyqtSignal()
+    attachments_received = pyqtSignal(list)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
+
+    def insertFromMimeData(self, source):
+        # Handle screenshot paste / drag-drop image -> add as attachment instead of inserting into text.
+        try:
+            data_urls, file_paths = extract_images_from_mime(source)
+            sources: list[str] = []
+            sources.extend(data_urls)
+            sources.extend(file_paths)
+            if sources:
+                self.attachments_received.emit(sources)
+                return
+        except Exception:
+            pass
+
+        super().insertFromMimeData(source)
     
     def keyPressEvent(self, event: QKeyEvent):
         if (event.key() == Qt.Key.Key_Return and 
@@ -111,11 +130,12 @@ class InputArea(QWidget):
         # Text input
         self.text_input = MessageTextEdit()
         self.text_input.setObjectName("message_input")
-        self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送)")
+        self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，支持粘贴截图/拖拽图片)")
         self.text_input.setMinimumHeight(40)
         self.text_input.setMaximumHeight(120)
         self.text_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.text_input.send_requested.connect(self._send_message)
+        self.text_input.attachments_received.connect(self.add_images)
         wrapper_layout.addWidget(self.text_input)
         
         # ===== Single-row toolbar: [📎] [Provider▾] [Model▾] [🧠] [⚙] [🔧] --- [发送] =====
@@ -235,26 +255,38 @@ class InputArea(QWidget):
             '图片 (*.png *.jpg *.jpeg *.gif *.webp);;所有文件 (*)'
         )
         for file_path in file_paths:
-            self._add_image(file_path)
+            self._add_image_source(file_path)
     
-    def _add_image(self, file_path: str):
-        if file_path in self._attached_images:
+    def add_images(self, image_sources: list) -> None:
+        if not image_sources:
+            return
+        for src in image_sources:
+            if isinstance(src, str) and src:
+                self._add_image_source(src)
+
+        try:
+            self.text_input.setFocus()
+        except Exception:
+            pass
+
+    def _add_image_source(self, image_source: str):
+        if image_source in self._attached_images:
             return
         
-        self._attached_images.append(file_path)
-        preview = ImagePreviewItem(file_path)
+        self._attached_images.append(image_source)
+        preview = ImagePreviewItem(image_source)
         preview.remove_requested.connect(self._remove_image)
         self.image_layout.insertWidget(self.image_layout.count() - 1, preview)
         self.image_preview.setVisible(True)
     
-    def _remove_image(self, image_path: str):
-        if image_path in self._attached_images:
-            self._attached_images.remove(image_path)
+    def _remove_image(self, image_source: str):
+        if image_source in self._attached_images:
+            self._attached_images.remove(image_source)
         
         for i in range(self.image_layout.count()):
             item = self.image_layout.itemAt(i)
             widget = item.widget()
-            if isinstance(widget, ImagePreviewItem) and widget.image_path == image_path:
+            if isinstance(widget, ImagePreviewItem) and widget.image_source == image_source:
                 widget.deleteLater()
                 break
         
@@ -271,15 +303,19 @@ class InputArea(QWidget):
             return
         
         encoded_images = []
-        for image_path in self._attached_images:
+        for image_source in self._attached_images:
             try:
-                with open(image_path, 'rb') as f:
+                if isinstance(image_source, str) and image_source.startswith('data:'):
+                    encoded_images.append(image_source)
+                    continue
+
+                with open(image_source, 'rb') as f:
                     data = base64.b64encode(f.read()).decode('utf-8')
-                    ext = os.path.splitext(image_path)[1].lower()
-                    mime = {'.png': 'image/png', '.jpg': 'image/jpeg',
-                            '.jpeg': 'image/jpeg', '.gif': 'image/gif',
-                            '.webp': 'image/webp'}.get(ext, 'image/png')
-                    encoded_images.append(f"data:{mime};base64,{data}")
+                ext = os.path.splitext(image_source)[1].lower()
+                mime = {'.png': 'image/png', '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                        '.webp': 'image/webp', '.bmp': 'image/bmp'}.get(ext, 'image/png')
+                encoded_images.append(f"data:{mime};base64,{data}")
             except Exception as e:
                 print(f"Error: {e}")
         
@@ -298,11 +334,9 @@ class InputArea(QWidget):
         self.send_btn.setEnabled(enabled)
     
     def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.mimeData().hasImage():
             event.acceptProposedAction()
     
     def dropEvent(self, event: QDropEvent):
-        for url in event.mimeData().urls():
-            file_path = url.toLocalFile()
-            if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                self._add_image(file_path)
+        data_urls, file_paths = extract_images_from_mime(event.mimeData())
+        self.add_images(data_urls + file_paths)

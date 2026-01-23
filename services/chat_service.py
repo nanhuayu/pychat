@@ -125,7 +125,7 @@ class ChatService:
         stream_enabled = conv_settings.get('stream', True)
         temperature = conv_settings.get('temperature', 0.7)
         top_p = conv_settings.get('top_p')
-        max_tokens = conv_settings.get('max_tokens', 4096)
+        max_tokens = conv_settings.get('max_tokens', 65536)
 
         try:
             stream_enabled = bool(stream_enabled)

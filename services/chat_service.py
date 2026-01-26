@@ -9,6 +9,7 @@ import json
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable
+import threading
 from models.provider import Provider
 from models.conversation import Message, Conversation
 
@@ -74,11 +75,13 @@ class ChatService:
     
     def __init__(self):
         self.timeout = 120.0
-        self._cancel_requested = False
+        # Legacy cancel event (kept for backward compatibility).
+        # Prefer passing cancel_event into send_message for concurrent requests.
+        self._legacy_cancel_event = threading.Event()
     
     def cancel_request(self):
         """Cancel the current request"""
-        self._cancel_requested = True
+        self._legacy_cancel_event.set()
     
     async def send_message(
         self,
@@ -87,10 +90,15 @@ class ChatService:
         on_token: Optional[Callable[[str], None]] = None,
         on_thinking: Optional[Callable[[str], None]] = None,
         enable_thinking: bool = True,
-        debug_log_path: Optional[str] = None
+        debug_log_path: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None
     ) -> Message:
         """Send a message and get response (with streaming support)"""
-        self._cancel_requested = False
+        # Backward compatibility: callers that still use cancel_request()
+        # will not pass cancel_event.
+        if cancel_event is None:
+            cancel_event = self._legacy_cancel_event
+            self._legacy_cancel_event.clear()
         start_time = time.time()
 
         thinking_parser = _ThinkingStreamParser()
@@ -339,7 +347,7 @@ class ChatService:
                     buffer = ""
                     stop_stream = False
                     async for chunk in response.aiter_bytes():
-                        if self._cancel_requested:
+                        if cancel_event is not None and cancel_event.is_set():
                             break
 
                         if stop_stream:

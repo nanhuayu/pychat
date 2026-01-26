@@ -282,6 +282,31 @@ class ChatView(QWidget):
 
         QTimer.singleShot(10, self._scroll_to_bottom)
 
+    def restore_streaming_state(self, visible_text: str = "", thinking_text: str = "") -> None:
+        """Restore streaming UI from cached buffers (used when switching back to a streaming conversation)."""
+        if not self._streaming_label:
+            # Caller should create the container via start_streaming_response(model=...).
+            return
+
+        self._streaming_text = str(visible_text or "")
+        self._streaming_label.set_markdown(self._streaming_text or "正在生成...")
+
+        self._streaming_thinking_text = str(thinking_text or "")
+        if self._streaming_thinking_label and self._streaming_thinking_btn:
+            if self._streaming_thinking_text:
+                self._streaming_thinking_label.set_markdown(self._streaming_thinking_text)
+                self._streaming_thinking_btn.setVisible(True)
+                self._streaming_thinking_expanded = True
+                self._streaming_thinking_label.setVisible(True)
+                self._streaming_thinking_btn.setText("收起思考")
+            else:
+                self._streaming_thinking_btn.setVisible(False)
+                self._streaming_thinking_expanded = False
+                self._streaming_thinking_label.setVisible(False)
+                self._streaming_thinking_btn.setText("思考")
+
+        QTimer.singleShot(10, self._scroll_to_bottom)
+
     def _toggle_streaming_thinking(self):
         if not self._streaming_thinking_label or not self._streaming_thinking_btn:
             return

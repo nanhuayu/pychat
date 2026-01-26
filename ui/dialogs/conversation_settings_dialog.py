@@ -134,7 +134,7 @@ class ConversationSettingsDialog(QDialog):
         self.max_tokens.setObjectName("conv_max_tokens")
         self.max_tokens.setRange(0, 200000)
         self.max_tokens.setSingleStep(256)
-        self.max_tokens.setValue(int((conversation.settings or {}).get("max_tokens", 65536) or 65536))
+        self.max_tokens.setValue(int((conversation.settings or {}).get("max_tokens") or 0)) # 65536
         self.max_tokens.setToolTip("最大输出 Token 数")
         params_form.addRow("最大 Token", self.max_tokens)
 

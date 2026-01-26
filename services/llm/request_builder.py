@@ -75,7 +75,7 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
     stream_enabled = settings.get("stream", True)
     temperature = settings.get("temperature", 0.7)
     top_p = settings.get("top_p")
-    max_tokens = settings.get("max_tokens", 65536)
+    max_tokens = settings.get("max_tokens", 0)
 
     try:
         stream_enabled = bool(stream_enabled)
@@ -85,10 +85,12 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
     body: Dict[str, Any] = {
         "model": conversation.model or provider.default_model,
         "messages": api_messages,
-        "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": stream_enabled,
     }
+
+    if max_tokens > 0:
+        body["max_tokens"] = max_tokens
     
     if tools:
         body["tools"] = tools

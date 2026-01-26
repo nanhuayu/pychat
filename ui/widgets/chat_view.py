@@ -57,25 +57,7 @@ class ChatView(QWidget):
         header_layout.addStretch()
 
         # ===== Message navigation (toolbar-style group) =====
-        nav_group = QFrame()
-        nav_group.setObjectName("nav_group")
-        nav_layout = QHBoxLayout(nav_group)
-        nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(2)
-
-        self.nav_prev_btn = self._create_nav_button("◀", "上一条消息")
-        self.nav_prev_btn.clicked.connect(self.go_prev_message)
-        nav_layout.addWidget(self.nav_prev_btn)
-
-        self.nav_next_btn = self._create_nav_button("▶", "下一条消息")
-        self.nav_next_btn.clicked.connect(self.go_next_message)
-        nav_layout.addWidget(self.nav_next_btn)
-
-        self.nav_bottom_btn = self._create_nav_button("▶▶", "滚动到底部")
-        self.nav_bottom_btn.clicked.connect(self._scroll_to_bottom)
-        nav_layout.addWidget(self.nav_bottom_btn)
-
-        header_layout.addWidget(nav_group)
+        header_layout.addWidget(self._create_nav_bar())
         
         layout.addWidget(self.header_bar)
         
@@ -147,6 +129,31 @@ class ChatView(QWidget):
             pass
 
         return super().eventFilter(watched, event)
+
+    def _create_nav_bar(self) -> QWidget:
+        nav_group = QFrame()
+        nav_group.setObjectName("nav_group")
+        nav_layout = QHBoxLayout(nav_group)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(2)
+
+        self.nav_top_btn = self._create_nav_button("◀◀", "滚动到顶部")
+        self.nav_top_btn.clicked.connect(self._scroll_to_top)
+        nav_layout.addWidget(self.nav_top_btn)
+
+        self.nav_prev_btn = self._create_nav_button("◀", "上一条消息")
+        self.nav_prev_btn.clicked.connect(self.go_prev_message)
+        nav_layout.addWidget(self.nav_prev_btn)
+
+        self.nav_next_btn = self._create_nav_button("▶", "下一条消息")
+        self.nav_next_btn.clicked.connect(self.go_next_message)
+        nav_layout.addWidget(self.nav_next_btn)
+
+        self.nav_bottom_btn = self._create_nav_button("▶▶", "滚动到底部")
+        self.nav_bottom_btn.clicked.connect(self._scroll_to_bottom)
+        nav_layout.addWidget(self.nav_bottom_btn)
+        
+        return nav_group
 
     def _create_nav_button(self, text: str, tooltip: str) -> QToolButton:
         btn = QToolButton()
@@ -412,9 +419,12 @@ class ChatView(QWidget):
         widgets = self._navigable_widgets()
         total = len(widgets)
         if total <= 0:
+            self.nav_top_btn.setEnabled(False)
             self.nav_prev_btn.setEnabled(False)
             self.nav_next_btn.setEnabled(False)
             self.nav_bottom_btn.setEnabled(False)
+            
+            self.nav_top_btn.setToolTip("滚动到顶部")
             self.nav_prev_btn.setToolTip("上一条消息")
             self.nav_next_btn.setToolTip("下一条消息")
             self.nav_bottom_btn.setToolTip("滚动到底部")
@@ -424,12 +434,14 @@ class ChatView(QWidget):
         if idx < 0:
             idx = 0
 
+        self.nav_top_btn.setEnabled(True)
         self.nav_prev_btn.setEnabled(idx > 0)
         self.nav_next_btn.setEnabled(idx < total - 1)
         self.nav_bottom_btn.setEnabled(True)
 
         # Keep the UI minimal: show position in tooltips instead of an always-visible counter.
         pos_text = f"{idx + 1}/{total}"
+        self.nav_top_btn.setToolTip(f"滚动到顶部 (共 {total} 条)")
         self.nav_prev_btn.setToolTip(f"上一条消息 ({pos_text})")
         self.nav_next_btn.setToolTip(f"下一条消息 ({pos_text})")
         self.nav_bottom_btn.setToolTip(f"滚动到底部 (共 {total} 条)")
@@ -437,3 +449,8 @@ class ChatView(QWidget):
     def _scroll_to_bottom(self):
         scrollbar = self.scroll_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _scroll_to_top(self):
+        scrollbar = self.scroll_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.minimum())
+

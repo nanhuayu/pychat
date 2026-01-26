@@ -14,7 +14,7 @@ import json
 import re
 import time
 from datetime import datetime
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Any, Dict
 import threading
 
 import httpx
@@ -41,11 +41,14 @@ def _estimate_tokens(text: str) -> int:
     return int(chinese_chars / 1.5 + other_chars / 4)
 
 
+from services.mcp_manager import McpManager
+
 class ChatService:
     """Handles chat interactions with LLM providers."""
 
     def __init__(self, timeout: float = 120.0):
         self.timeout = float(timeout)
+        self.mcp_manager = McpManager()
 
     async def send_message(
         self,
@@ -54,6 +57,8 @@ class ChatService:
         on_token: Optional[Callable[[str], None]] = None,
         on_thinking: Optional[Callable[[str], None]] = None,
         enable_thinking: bool = True,
+        enable_search: bool = False,
+        enable_mcp: bool = False,
         debug_log_path: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Message:
@@ -73,11 +78,29 @@ class ChatService:
         response_content = ""
         thinking_content = ""
         tokens_used = 0
+        response_tool_calls: Optional[List[Dict[str, Any]]] = None
 
         try:
+            # Gather tools if configured
+            prepared_query = ""
+            try:
+                for m in reversed(getattr(conversation, "messages", []) or []):
+                    if getattr(m, "role", "") == "user":
+                        prepared_query = (getattr(m, "content", "") or "").strip()
+                        if prepared_query:
+                            break
+            except Exception:
+                prepared_query = ""
+
+            tools = await self.mcp_manager.get_all_tools(
+                include_search=enable_search,
+                include_mcp=enable_mcp,
+                prepared_queries=[prepared_query] if prepared_query else None,
+            )
+            
             base_messages = select_base_messages(conversation)
             api_messages = build_api_messages(base_messages, provider)
-            request_body = build_request_body(provider, conversation, api_messages)
+            request_body = build_request_body(provider, conversation, api_messages, tools=tools)
 
             if debug_log_path:
                 try:
@@ -115,6 +138,10 @@ class ChatService:
                         choices = payload.get("choices", []) if isinstance(payload, dict) else []
                         if choices:
                             msg = choices[0].get("message", {}) or {}
+                            if isinstance(msg, dict):
+                                tcs = msg.get("tool_calls")
+                                if isinstance(tcs, list) and tcs:
+                                    response_tool_calls = tcs
                             content = msg.get("content", "") or ""
                             visible, embedded_thinking = thinking_parser.feed(content)
                             response_content += visible
@@ -147,6 +174,7 @@ class ChatService:
                         role="assistant",
                         content=response_content,
                         thinking=thinking_content if thinking_content else None,
+                        tool_calls=response_tool_calls if response_tool_calls else None,
                         tokens=tokens_used,
                         response_time_ms=response_time_ms,
                     )
@@ -198,6 +226,9 @@ class ChatService:
                             response_time_ms=response_time_ms,
                         )
 
+                    # State for accumulating tool calls
+                    tool_calls_buffer: List[dict] = []
+                    
                     async for data in iter_sse_data_lines(response, cancel_event=cancel_event, log_fp=log_fp):
                         try:
                             chunk_data = parse_sse_json(data)
@@ -219,7 +250,27 @@ class ChatService:
                         choices = chunk_data.get("choices", []) if isinstance(chunk_data, dict) else []
                         if choices:
                             delta = choices[0].get("delta", {}) or {}
-
+                            
+                            # Handle tool_calls
+                            chunk_tool_calls = delta.get("tool_calls")
+                            if chunk_tool_calls:
+                                for tc in chunk_tool_calls:
+                                    index = tc.get("index", 0)
+                                    # Ensure buffer size
+                                    while len(tool_calls_buffer) <= index:
+                                        tool_calls_buffer.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                                    
+                                    tcb = tool_calls_buffer[index]
+                                    if tc.get("id"): tcb["id"] = tc["id"]
+                                    if tc.get("type"): tcb["type"] = tc["type"]
+                                    
+                                    func = tc.get("function", {})
+                                    if func.get("name"): tcb["function"]["name"] += func["name"]
+                                    if func.get("arguments"): tcb["function"]["arguments"] += func["arguments"]
+                                    
+                                    # We don't stream tool calls to UI generally? Or maybe just simple text notification
+                                    # TODO: Callback for tool status? 
+                                    
                             content = delta.get("content", "") or ""
                             if content:
                                 visible, embedded_thinking = thinking_parser.feed(content)
@@ -298,6 +349,10 @@ class ChatService:
 
         end_time = time.time()
         response_time_ms = int((end_time - start_time) * 1000)
+        
+        # Finalize tool calls
+        final_tool_calls = [tc for tc in (locals().get("tool_calls_buffer", []) or []) if tc.get("id")]
+        
         if tokens_used == 0 and response_content:
             tokens_used = _estimate_tokens(response_content)
 
@@ -305,6 +360,7 @@ class ChatService:
             role="assistant",
             content=response_content,
             thinking=thinking_content if thinking_content else None,
+            tool_calls=final_tool_calls if final_tool_calls else None,
             tokens=tokens_used,
             response_time_ms=response_time_ms,
         )

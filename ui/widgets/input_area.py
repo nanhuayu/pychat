@@ -94,6 +94,8 @@ class InputArea(QWidget):
     conversation_settings_requested = pyqtSignal()
     provider_settings_requested = pyqtSignal()  # New: quick access to provider config
     show_thinking_changed = pyqtSignal(bool)
+    mcp_toggled = pyqtSignal(bool)  # MCP 开关
+    search_toggled = pyqtSignal(bool)  # 搜索开关
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -102,6 +104,8 @@ class InputArea(QWidget):
         self._attached_images: List[str] = []
         self._providers = []
         self._suppress_thinking_signal = False
+        self._mcp_enabled = False
+        self._search_enabled = False
         self._setup_ui()
     
     def _setup_ui(self):
@@ -174,6 +178,24 @@ class InputArea(QWidget):
         self.thinking_toggle.setCheckable(True)
         self.thinking_toggle.toggled.connect(self._on_thinking_toggled)
         toolbar.addWidget(self.thinking_toggle)
+        
+        # MCP toggle
+        self.mcp_toggle = QToolButton()
+        self.mcp_toggle.setObjectName("toolbar_btn")
+        self.mcp_toggle.setText("🔌")
+        self.mcp_toggle.setToolTip("启用 MCP 工具")
+        self.mcp_toggle.setCheckable(True)
+        self.mcp_toggle.toggled.connect(self._on_mcp_toggled)
+        toolbar.addWidget(self.mcp_toggle)
+        
+        # Search toggle
+        self.search_toggle = QToolButton()
+        self.search_toggle.setObjectName("toolbar_btn")
+        self.search_toggle.setText("🔍")
+        self.search_toggle.setToolTip("启用网络搜索")
+        self.search_toggle.setCheckable(True)
+        self.search_toggle.toggled.connect(self._on_search_toggled)
+        toolbar.addWidget(self.search_toggle)
         
         # Conversation settings
         self.conv_settings_btn = QToolButton()
@@ -248,6 +270,20 @@ class InputArea(QWidget):
         if self._suppress_thinking_signal:
             return
         self.show_thinking_changed.emit(bool(checked))
+    
+    def _on_mcp_toggled(self, checked: bool):
+        self._mcp_enabled = checked
+        self.mcp_toggled.emit(checked)
+    
+    def _on_search_toggled(self, checked: bool):
+        self._search_enabled = checked
+        self.search_toggled.emit(checked)
+    
+    def is_mcp_enabled(self) -> bool:
+        return self._mcp_enabled
+    
+    def is_search_enabled(self) -> bool:
+        return self._search_enabled
     
     def _attach_image(self):
         file_paths, _ = QFileDialog.getOpenFileNames(

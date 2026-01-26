@@ -16,6 +16,8 @@ class Message:
     role: str = "user"  # "user", "assistant", "system"
     content: str = ""
     images: List[str] = field(default_factory=list)  # Base64 or file paths
+    tool_calls: Optional[List[Dict[str, Any]]] = None  # [{id, type, function: {name, arguments}}]
+    tool_call_id: Optional[str] = None  # For role="tool" messages
     thinking: Optional[str] = None
     tokens: Optional[int] = None
     created_at: datetime = field(default_factory=datetime.now)
@@ -29,6 +31,8 @@ class Message:
             'role': self.role,
             'content': self.content,
             'images': self.images,
+            'tool_calls': self.tool_calls,
+            'tool_call_id': self.tool_call_id,
             'thinking': self.thinking,
             'tokens': self.tokens,
             'created_at': self.created_at.isoformat(),
@@ -116,6 +120,8 @@ class Message:
             role=data.get('role', 'user'),
             content=content,
             images=images,
+            tool_calls=data.get('tool_calls'),
+            tool_call_id=data.get('tool_call_id'),
             thinking=data.get('thinking'),
             tokens=data.get('tokens'),
             created_at=created_at,

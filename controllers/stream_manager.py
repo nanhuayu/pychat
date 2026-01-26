@@ -16,11 +16,12 @@ This avoids mutating shared state from background threads.
 
 from __future__ import annotations
 
+import json
 import asyncio
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -31,18 +32,20 @@ from services.chat_service import ChatService
 
 
 class StreamManager(QObject):
-    """Orchestrates LLM streaming per conversation."""
+    """Orchestrates LLM streaming per conversation, including Tool Calls."""
 
     # Public signals (main-thread only)
     stream_started = pyqtSignal(str, str, str)          # conversation_id, request_id, model
     token_received = pyqtSignal(str, str, str)          # conversation_id, request_id, token
     thinking_received = pyqtSignal(str, str, str)       # conversation_id, request_id, thinking
-    response_complete = pyqtSignal(str, str, object)    # conversation_id, request_id, Message
+    response_step = pyqtSignal(str, str, object)        # conversation_id, request_id, Message (Intermediate step)
+    response_complete = pyqtSignal(str, str, object)    # conversation_id, request_id, Message (Final)
     response_error = pyqtSignal(str, str, str)          # conversation_id, request_id, error
 
     # Internal raw signals (emitted from worker threads)
     _raw_token = pyqtSignal(str, str, str)
     _raw_thinking = pyqtSignal(str, str, str)
+    _raw_step = pyqtSignal(str, str, object)
     _raw_complete = pyqtSignal(str, str, object)
     _raw_error = pyqtSignal(str, str, str)
 
@@ -53,6 +56,7 @@ class StreamManager(QObject):
 
         self._raw_token.connect(self._on_raw_token)
         self._raw_thinking.connect(self._on_raw_thinking)
+        self._raw_step.connect(self._on_raw_step)
         self._raw_complete.connect(self._on_raw_complete)
         self._raw_error.connect(self._on_raw_error)
 
@@ -68,6 +72,8 @@ class StreamManager(QObject):
         conversation: Conversation,
         *,
         enable_thinking: bool,
+        enable_search: bool = False,
+        enable_mcp: bool = False,
         debug_log_path: Optional[str] = None,
     ) -> Optional[ConversationStreamState]:
         """Start streaming for a conversation.
@@ -98,26 +104,108 @@ class StreamManager(QObject):
             conversation_snapshot = conversation
 
         chat_service = self._chat_service
+        mcp_manager = chat_service.mcp_manager
 
         def run_async() -> None:
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                
+                # Maximum conversation turns to prevent infinite loops
+                max_turns = 10
+                turns = 0
+                
+                # Current working conversation context (evolves with tool calls)
+                current_conversation = conversation_snapshot
+                
+                final_response: Optional[Message] = None
 
-                async def chat() -> Message:
+                async def chat_step() -> Message:
                     return await chat_service.send_message(
                         provider,
-                        conversation_snapshot,
+                        current_conversation,
                         on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
                         on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
                         enable_thinking=bool(enable_thinking),
+                        enable_search=bool(enable_search),
+                        enable_mcp=bool(enable_mcp),
                         debug_log_path=debug_log_path,
                         cancel_event=state.cancel_event,
                     )
 
-                resp = loop.run_until_complete(chat())
+                while turns < max_turns:
+                    if state.cancel_event.is_set():
+                        break
+                        
+                    msg = loop.run_until_complete(chat_step())
+                    
+                    if not msg:
+                        break # Error or empty?
+
+                    # If this message has tool calls, it's an intermediate step
+                    if msg.tool_calls:
+                        # 1. Emit the Assistant's "Call Tool" message as a step
+                        self._raw_step.emit(conversation_id, request_id, msg)
+                        
+                        # 2. Append to current context
+                        current_conversation.messages.append(msg)
+                        
+                        # 3. Serialize executions
+                        for tc in msg.tool_calls:
+                            if state.cancel_event.is_set():
+                                break
+                                
+                            tool_name = tc.get("function", {}).get("name")
+                            tool_args_str = tc.get("function", {}).get("arguments", "{}")
+                            tool_call_id = tc.get("id")
+                            
+                            try:
+                                tool_args = json.loads(tool_args_str)
+                            except Exception:
+                                tool_args = {}
+                                
+                            # Notify UI/log? We can emit a token?
+                            # self._raw_token.emit(conversation_id, request_id, f"\n[Executing {tool_name}...]\n")
+                            
+                            # Execute
+                            result_text = loop.run_until_complete(
+                                mcp_manager.call_tool(tool_name, tool_args)
+                            )
+                            
+                            # Create Tool Message
+                            tool_msg = Message(
+                                role="tool",
+                                content=str(result_text),
+                                tool_call_id=tool_call_id,
+                                metadata={"name": tool_name}
+                            )
+                            
+                            # Emit Tool Result as a step
+                            self._raw_step.emit(conversation_id, request_id, tool_msg)
+                            
+                            # Append to context
+                            current_conversation.messages.append(tool_msg)
+                            
+                        turns += 1
+                        # Reset visible text state allows new tokens to stream cleanly?
+                        # StreamManager state accumulation issues?
+                        # state.visible_text accumulates EVERYTHING?
+                        # Actually UI ChatView appends new bubble for each message.
+                        # We should reset state.visible_text for the NEXT turn.
+                        # But wait, raw tokens are just emitted.
+                        continue
+                    else:
+                        # Final answer
+                        final_response = msg
+                        break
+
                 loop.close()
-                self._raw_complete.emit(conversation_id, request_id, resp)
+                if final_response:
+                    self._raw_complete.emit(conversation_id, request_id, final_response)
+                else:
+                    # Cancelled or looped out
+                    pass
+                    
             except Exception as e:
                 self._raw_error.emit(conversation_id, request_id, str(e))
 
@@ -150,6 +238,19 @@ class StreamManager(QObject):
         except Exception:
             pass
         self.thinking_received.emit(conversation_id, request_id, thinking)
+
+    def _on_raw_step(self, conversation_id: str, request_id: str, message: object) -> None:
+        """Handle intermediate steps (tool calls / tool results)."""
+        state = self._streams.get(conversation_id)
+        if not state or state.request_id != request_id:
+            return
+        # Reset text buffers for the next turn?
+        # If we just finished an Assistant turn (with tool_calls), state.visible_text has that content.
+        # We emit the message object to UI. UI appends it.
+        # Ideally we clear state.visible_text so future tokens start fresh?
+        state.visible_text = ""
+        state.thinking_text = ""
+        self.response_step.emit(conversation_id, request_id, message)
 
     def _on_raw_complete(self, conversation_id: str, request_id: str, response: object) -> None:
         state = self._streams.get(conversation_id)

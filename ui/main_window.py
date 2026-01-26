@@ -24,7 +24,7 @@ from .widgets.sidebar import Sidebar
 from .widgets.chat_view import ChatView
 from .widgets.input_area import InputArea
 from .widgets.stats_panel import StatsPanel
-from .dialogs.settings_dialog import SettingsDialog
+from .settings.settings_dialog import SettingsDialog
 from .dialogs.message_editor import MessageEditorDialog
 from .dialogs.conversation_settings_dialog import ConversationSettingsDialog
 
@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         # Streaming events (thread-safe; StreamManager normalizes + guards request_id)
         self.stream_manager.token_received.connect(self._on_token_received)
         self.stream_manager.thinking_received.connect(self._on_thinking_received)
+        self.stream_manager.response_step.connect(self._on_response_step)
         self.stream_manager.response_complete.connect(self._on_response_complete)
         self.stream_manager.response_error.connect(self._on_response_error)
         
@@ -437,10 +438,16 @@ class MainWindow(QMainWindow):
 
         enable_thinking = bool((conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True)))
 
+        # Get tool toggles from input area
+        enable_search = self.input_area.is_search_enabled()
+        enable_mcp = self.input_area.is_mcp_enabled()
+
         state = self.stream_manager.start(
             provider,
             conversation,
             enable_thinking=enable_thinking,
+            enable_search=enable_search,
+            enable_mcp=enable_mcp,
             debug_log_path=debug_log_path,
         )
         if not state:
@@ -500,6 +507,24 @@ class MainWindow(QMainWindow):
         self.current_conversation.settings['show_thinking'] = bool(enabled)
         self.storage.save_conversation(self.current_conversation)
     
+    def _on_response_step(self, conversation_id: str, request_id: str, message: Message):
+        """Handle intermediate message steps (tool calls/results)."""
+        target_conv = self.current_conversation if (self.current_conversation and self.current_conversation.id == conversation_id) else self.storage.load_conversation(conversation_id)
+        
+        if target_conv:
+            # target_conv.add_message(message) 
+            # Note: add_message might auto-update IDs? Use append if simple. 
+            # Check conversation.py. add_message is safer.
+            # But add_message is part of Conversation class? yes.
+            target_conv.messages.append(message)
+            self.storage.save_conversation(target_conv)
+            
+            if self.current_conversation and self.current_conversation.id == conversation_id:
+                if message.role == "assistant":
+                    self.chat_view.finish_streaming_response(message)
+                else:
+                    self.chat_view.add_message(message)
+
     def _on_response_complete(self, conversation_id: str, request_id: str, response):
         """Handle response completion - called from main thread."""
         self._sync_input_enabled()

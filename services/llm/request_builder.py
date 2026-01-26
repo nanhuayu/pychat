@@ -20,6 +20,15 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
     api_messages: List[Dict[str, Any]] = []
 
     for msg in messages:
+        if msg.role == "tool":
+            # message for tool result
+            api_messages.append({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": msg.content
+            })
+            continue
+
         if msg.images and provider.supports_vision:
             content: list[dict[str, Any]] = []
 
@@ -38,15 +47,24 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
                 if image_url:
                     content.append({"type": "image_url", "image_url": {"url": image_url}})
 
-            api_messages.append({"role": msg.role, "content": content})
+            message_payload = {"role": msg.role, "content": content}
         else:
-            api_messages.append({"role": msg.role, "content": msg.content})
+            message_payload = {"role": msg.role, "content": msg.content}
+
+        # Add tool_calls if present (assistant role)
+        if msg.tool_calls:
+            message_payload["tool_calls"] = msg.tool_calls
+            if not message_payload["content"]:
+                message_payload["content"] = None
+        
+        api_messages.append(message_payload)
 
     return api_messages
 
 
-def build_request_body(provider: Provider, conversation: Conversation, api_messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+def build_request_body(provider: Provider, conversation: Conversation, api_messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     settings = conversation.settings or {}
+
 
     stream_enabled = settings.get("stream", True)
     temperature = settings.get("temperature", 0.7)
@@ -65,6 +83,11 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
         "temperature": temperature,
         "stream": stream_enabled,
     }
+    
+    if tools:
+        body["tools"] = tools
+        # OpenAI-compatible default: let the model decide when to call tools.
+        body.setdefault("tool_choice", "auto")
 
     if isinstance(top_p, (int, float)):
         body["top_p"] = float(top_p)

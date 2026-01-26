@@ -2,7 +2,8 @@
 
 /* ============ Global ============ */
 QMainWindow,
-QDialog {
+QDialog,
+QWidget:window {
     background-color: #1a1a1a;
     color: #e0e0e0;
 }
@@ -558,4 +559,47 @@ QLabel#editor_role_label {
 QScrollArea {
     background-color: transparent;
     border: none;
+}
+
+/* ============ Settings Dialog ============ */
+#settings_sidebar {
+    background-color: #1a1a1a;
+    border-right: 1px solid #2a2a2a;
+}
+
+#settings_nav {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+
+#settings_nav::item {
+    height: 40px;
+    padding-left: 12px;
+    border-radius: 6px;
+    margin: 2px 4px;
+}
+
+#settings_nav::item:selected {
+    background-color: #3a3a3a;
+    color: #818cf8;
+}
+
+#settings_nav::item:hover:!selected {
+    background-color: #2a2a2a;
+}
+
+#settings_content {
+    background-color: #1a1a1a;
+}
+
+#settings_list {
+    background-color: #222222;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+}
+
+#settings_list::item {
+    height: 36px;
+    padding-left: 8px;
 }

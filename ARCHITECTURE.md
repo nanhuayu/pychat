@@ -6,7 +6,9 @@
 pychat/
 ├── models/              # 纯数据模型（无外部依赖）
 │   ├── conversation.py  # Conversation, Message, ConversationStreamState
-│   └── provider.py      # Provider 模型
+│   ├── provider.py      # Provider 模型
+│   ├── mcp_server.py    # MCP 服务器配置
+│   └── search_config.py # 搜索配置
 │
 ├── utils/               # 纯工具函数（无 UI/services 依赖）
 │   └── image_encoding.py # encode_image_file_to_data_url
@@ -15,6 +17,8 @@ pychat/
 │   ├── chat_service.py  # LLM 请求编排（薄门面）
 │   ├── storage_service.py # 本地 JSON 持久化
 │   ├── provider_service.py # Provider 管理
+│   ├── mcp_manager.py   # MCP + 搜索工具管理
+│   ├── search_service.py # 网络搜索服务 (Tavily/Google/SearXNG)
 │   ├── llm/             # LLM 基础设施
 │   │   ├── request_builder.py # 构建 API 请求
 │   │   ├── http_utils.py      # HTTP/SSE 工具
@@ -30,6 +34,8 @@ pychat/
     ├── main_window.py   # 主窗口
     ├── widgets/         # 可复用组件
     ├── dialogs/         # 对话框
+    ├── settings/        # 设置模块 (单文件)
+    │   └── settings_dialog.py  # 统一设置对话框
     └── utils/           # Qt 相关工具
         ├── image_loader.py  # QPixmap 加载
         └── image_utils.py   # 剪贴板/拖放图片处理
@@ -93,6 +99,26 @@ models  ←─ utils ←─ services ←─ controllers ←─ ui
 | `thinking_parser` | `<think>`/`<analysis>` 标签提取 | ~80 |
 | `StreamManager` | 并发流式状态管理 | ~200 |
 | `StorageService` | JSON 持久化（委托 importers） | ~300 |
+
+## MCP/工具调用（Tool Calling）
+
+### 1) 内置默认工具（无需外部 MCP Server）
+
+当 UI 里启用 `MCP` 开关后，`McpManager.get_all_tools(include_mcp=True)` 会自动注入一组内置工具：
+
+- `builtin_filesystem_ls`：列出工作区目录内容（支持递归/限制条目）
+- `builtin_filesystem_read`：读取工作区内文件（限制字节数）
+- `builtin_filesystem_grep`：在工作区内按正则检索（可选 glob 过滤）
+- `builtin_python_exec`：本地执行 Python 代码（带超时，返回 stdout/stderr）
+
+这些工具用于实现“默认 MCP 系统能力”，并支持多步 tool-call（模型可先 ls 再 read/grep，再总结）。
+
+### 2) 外部 MCP Server（可选）
+
+如果配置了 `mcp_servers.json`，`McpManager` 会按需通过 `stdio_client + ClientSession` 临时连接：
+
+- `list_tools()` 获取工具列表并以 `mcp__{server}__{tool}` 形式命名，避免与内置工具冲突
+- `call_tool()` 执行工具并把结果回填为 `role=tool` 消息，交给下一轮 LLM 继续推理
 
 ## 设计原则
 

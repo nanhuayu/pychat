@@ -9,6 +9,8 @@ from pathlib import Path
 
 from models.conversation import Conversation
 from models.provider import Provider
+from models.mcp_server import McpServerConfig
+from models.search_config import SearchConfig
 from services.importers import parse_imported_data
 
 
@@ -24,6 +26,8 @@ class StorageService:
         self.data_dir = Path(data_dir)
         self.conversations_dir = self.data_dir / 'conversations'
         self.providers_file = self.data_dir / 'providers.json'
+        self.mcp_servers_file = self.data_dir / 'mcp_servers.json'
+        self.search_config_file = self.data_dir / 'search_config.json'
         self.settings_file = self.data_dir / 'settings.json'
         
         # Ensure directories exist
@@ -150,4 +154,53 @@ class StorageService:
                     return json.load(f)
         except Exception as e:
             print(f"Error loading settings: {e}")
-        return {}
+        return {}  # Explicit return empty dict on failure/missing
+
+    # ============ MCP Servers ============
+
+    def save_mcp_servers(self, servers: List[McpServerConfig]) -> bool:
+        """Save MCP servers configuration"""
+        try:
+            data = [s.to_dict() for s in servers]
+            with open(self.mcp_servers_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"Error saving MCP servers: {e}")
+            return False
+
+    def load_mcp_servers(self) -> List[McpServerConfig]:
+        """Load MCP servers configuration"""
+        try:
+            if not self.mcp_servers_file.exists():
+                return []
+            
+            with open(self.mcp_servers_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            return [McpServerConfig.from_dict(d) for d in data if isinstance(d, dict)]
+        except Exception as e:
+            print(f"Error loading MCP servers: {e}")
+            return []
+
+    # ============ Search Config ============
+
+    def save_search_config(self, config: SearchConfig) -> bool:
+        """Save search configuration"""
+        try:
+            with open(self.search_config_file, 'w', encoding='utf-8') as f:
+                json.dump(config.to_dict(), f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"Error saving search config: {e}")
+            return False
+
+    def load_search_config(self) -> SearchConfig:
+        """Load search configuration"""
+        try:
+            if self.search_config_file.exists():
+                with open(self.search_config_file, 'r', encoding='utf-8') as f:
+                    return SearchConfig.from_dict(json.load(f))
+        except Exception as e:
+            print(f"Error loading search config: {e}")
+        return SearchConfig()

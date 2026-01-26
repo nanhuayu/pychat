@@ -380,6 +380,7 @@ class SettingsDialog(QDialog):
         net_group = QGroupBox("网络")
         net_layout = QFormLayout(net_group)
         self.proxy_edit = QLineEdit()
+        self.proxy_edit.setText(self.current_settings.get('proxy_url', ''))
         self.proxy_edit.setPlaceholderText("http://127.0.0.1:7890")
         net_layout.addRow("代理服务器:", self.proxy_edit)
         layout.addWidget(net_group)
@@ -409,6 +410,9 @@ class SettingsDialog(QDialog):
 
     def get_log_stream(self) -> bool:
         return self.log_check.isChecked()
+    
+    def get_proxy_url(self) -> str:
+        return self.proxy_edit.text().strip()
 
     def accept(self):
         """Save all settings before closing"""

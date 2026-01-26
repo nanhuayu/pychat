@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
     
     def _load_data(self):
         self._app_settings = self.storage.load_settings() or {}
+        self._apply_proxy()
 
         self.providers = self.storage.load_providers()
         if not self.providers:
@@ -261,6 +262,16 @@ class MainWindow(QMainWindow):
                 self.setStyleSheet("\n\n".join(parts))
         except Exception as e:
             print(f"Error loading theme: {e}")
+
+    def _apply_proxy(self):
+        """Update environment variables for HTTP proxy"""
+        proxy = self._app_settings.get('proxy_url', '').strip()
+        if proxy:
+            os.environ['HTTP_PROXY'] = proxy
+            os.environ['HTTPS_PROXY'] = proxy
+        else:
+            os.environ.pop('HTTP_PROXY', None)
+            os.environ.pop('HTTPS_PROXY', None)
     
     def _on_conversation_selected(self, conversation_id: str):
         conversation = self.storage.load_conversation(conversation_id)
@@ -689,6 +700,9 @@ class MainWindow(QMainWindow):
             self._app_settings['theme'] = dialog.get_theme()
             self._app_settings['show_thinking'] = dialog.get_show_thinking()
             self._app_settings['log_stream'] = dialog.get_log_stream()
+            self._app_settings['proxy_url'] = dialog.get_proxy_url()
+            self._apply_proxy()
+
             self.storage.save_settings(self._app_settings)
             self.stats_panel.setVisible(self._app_settings['show_stats'])
             self.toggle_stats_action.setChecked(self._app_settings['show_stats'])

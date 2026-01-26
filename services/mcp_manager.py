@@ -412,7 +412,7 @@ class McpManager:
             if not isinstance(arguments, dict):
                 arguments = {}
             code = arguments.get("code", "")
-            timeout_sec = float(arguments.get("timeoutSec", 10) or 10)
+            timeout_sec = float(arguments.get("timeoutSec", 30) or 30)
             cwd = arguments.get("cwd", ".")
             if not isinstance(code, str) or not code.strip():
                 return "Missing 'code'"

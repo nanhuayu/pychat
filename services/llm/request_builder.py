@@ -56,6 +56,12 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
             message_payload["tool_calls"] = msg.tool_calls
             if not message_payload["content"]:
                 message_payload["content"] = None
+
+        # Add reasoning_content if present (required by DeepSeek R1 and similar models)
+        if msg.role == "assistant" and msg.thinking:
+            # Check metadata for original key, default to standard 'reasoning_content'
+            key = msg.metadata.get("thinking_key") or "reasoning_content"
+            message_payload[key] = msg.thinking
         
         api_messages.append(message_payload)
 

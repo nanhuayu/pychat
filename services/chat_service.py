@@ -79,6 +79,9 @@ class ChatService:
         thinking_content = ""
         tokens_used = 0
         response_tool_calls: Optional[List[Dict[str, Any]]] = None
+        # Default to standard field, but track actual source for accurate playback
+        detected_thinking_key: str = "reasoning_content"
+        THINKING_KEYS = ["reasoning_content", "thinking", "reasoning", "thinking_content", "thoughts", "thought"]
 
         try:
             # Gather tools if configured
@@ -146,14 +149,14 @@ class ChatService:
                             visible, embedded_thinking = thinking_parser.feed(content)
                             response_content += visible
 
-                            thinking = (
-                                msg.get("thinking", "")
-                                or msg.get("reasoning", "")
-                                or msg.get("reasoning_content", "")
-                                or msg.get("thinking_content", "")
-                                or msg.get("thoughts", "")
-                                or msg.get("thought", "")
-                            )
+                            thinking = ""
+                            for key in THINKING_KEYS:
+                                val = msg.get(key)
+                                if val:
+                                    thinking = val
+                                    detected_thinking_key = key
+                                    break
+
                             if enable_thinking:
                                 if embedded_thinking:
                                     thinking_content += embedded_thinking
@@ -186,6 +189,7 @@ class ChatService:
                                 "model": request_body.get("model")
                                 if isinstance(request_body, dict)
                                 else (conversation.model or provider.default_model),
+                                "thinking_key": detected_thinking_key,
                             }
                         )
                     except Exception:
@@ -283,14 +287,14 @@ class ChatService:
                                     if on_thinking:
                                         on_thinking(embedded_thinking)
 
-                            thinking = (
-                                delta.get("thinking", "")
-                                or delta.get("reasoning", "")
-                                or delta.get("reasoning_content", "")
-                                or delta.get("thinking_content", "")
-                                or delta.get("thoughts", "")
-                                or delta.get("thought", "")
-                            )
+                            thinking = ""
+                            for key in THINKING_KEYS:
+                                val = delta.get(key)
+                                if val:
+                                    thinking = val
+                                    detected_thinking_key = key
+                                    break
+
                             if enable_thinking and thinking:
                                 thinking_content += thinking
                                 if on_thinking:
@@ -370,6 +374,7 @@ class ChatService:
                 {
                     "provider_id": getattr(provider, "id", ""),
                     "provider_name": getattr(provider, "name", ""),
+                    "thinking_key": detected_thinking_key,
                     "model": request_body.get("model")
                     if isinstance(request_body, dict)
                     else (conversation.model or provider.default_model),

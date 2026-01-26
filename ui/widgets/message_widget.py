@@ -208,22 +208,25 @@ class MessageWidget(QFrame):
             layout.addLayout(images_layout)
 
     def _copy_original_content(self) -> None:
-        text = self.message.content
-        if text is None:
-            text = ""
-        if not isinstance(text, str):
-            text = str(text)
+        text = str(self.message.content or "")
+        QGuiApplication.clipboard().setText(text)
 
-        try:
-            QGuiApplication.clipboard().setText(text)
-        except Exception:
+        if not hasattr(self, "_copy_btn"):
             return
 
         try:
-            if hasattr(self, "_copy_btn") and self._copy_btn:
-                self._copy_btn.setToolTip("已复制")
-                QTimer.singleShot(1200, lambda: self._copy_btn.setToolTip("复制原文"))
-        except Exception:
+            self._copy_btn.setToolTip("已复制")
+            
+            def restore():
+                try:
+                    self._copy_btn.setToolTip("复制原文")
+                except RuntimeError:
+                    # Button deleted
+                    pass
+            
+            QTimer.singleShot(1200, restore)
+        except RuntimeError:
+            # Button already deleted
             pass
         
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from models.conversation import Conversation
 from models.provider import Provider
+from services.importers import parse_imported_data
 
 
 class StorageService:
@@ -94,7 +95,7 @@ class StorageService:
                 data = json.load(f)
                 
             # Handle different JSON formats
-            conversation = self._parse_imported_data(data)
+            conversation = parse_imported_data(data)
             if conversation:
                 # Assign new ID to avoid conflicts
                 import uuid
@@ -104,77 +105,6 @@ class StorageService:
         except Exception as e:
             print(f"Error importing conversation: {e}")
         return None
-
-    def _parse_imported_data(self, data: Dict[str, Any]) -> Optional[Conversation]:
-        """Parse imported JSON data, handling different formats"""
-        # OpenAI / OpenRouter request payload format
-        # {"model": "...", "messages": [{"role": "user", "content": [...] }], "max_tokens":..., ...}
-        if isinstance(data, dict) and 'model' in data and 'messages' in data and isinstance(data.get('messages'), list):
-            from models.conversation import Message
-
-            messages = [Message.from_dict(m) for m in data.get('messages', []) if isinstance(m, dict)]
-            conv = Conversation(
-                title=data.get('title', 'Imported Payload'),
-                messages=messages,
-                model=data.get('model', ''),
-                settings={
-                    'max_tokens': data.get('max_tokens'),
-                    'temperature': data.get('temperature'),
-                    'response_mime_type': data.get('response_mime_type'),
-                }
-            )
-            # Clean None values in settings
-            conv.settings = {k: v for k, v in conv.settings.items() if v is not None}
-            if not data.get('title'):
-                conv.generate_title_from_first_message()
-            return conv
-
-        # Direct Conversation format
-        if 'messages' in data:
-            return Conversation.from_dict(data)
-        
-        # ChatGPT export format
-        if 'mapping' in data:
-            return self._parse_chatgpt_format(data)
-        
-        # Array of messages format
-        if isinstance(data, list):
-            from models.conversation import Message
-            messages = [Message.from_dict(m) for m in data]
-            conv = Conversation(messages=messages)
-            conv.generate_title_from_first_message()
-            return conv
-        
-        return None
-
-    def _parse_chatgpt_format(self, data: Dict[str, Any]) -> Conversation:
-        """Parse ChatGPT export format"""
-        from models.conversation import Message
-        import uuid
-        
-        messages = []
-        mapping = data.get('mapping', {})
-        
-        # Extract messages from mapping
-        for node_id, node in mapping.items():
-            msg_data = node.get('message')
-            if msg_data and msg_data.get('content'):
-                role = msg_data.get('author', {}).get('role', 'user')
-                content_parts = msg_data.get('content', {}).get('parts', [])
-                content = '\n'.join(str(p) for p in content_parts if isinstance(p, str))
-                
-                if content and role in ['user', 'assistant']:
-                    messages.append(Message(
-                        id=str(uuid.uuid4()),
-                        role=role,
-                        content=content
-                    ))
-        
-        conv = Conversation(
-            title=data.get('title', 'Imported Chat'),
-            messages=messages
-        )
-        return conv
 
     # ============ Provider Operations ============
     

@@ -1,7 +1,9 @@
 """
 PyChat - Utils package
+
+Pure utility functions with no dependencies on ui/services layers.
 """
 
-from .helpers import format_tokens, format_time_ms, truncate_text
+from .image_encoding import encode_image_file_to_data_url
 
-__all__ = ['format_tokens', 'format_time_ms', 'truncate_text']
+__all__ = ['encode_image_file_to_data_url']

@@ -2,25 +2,23 @@
 Main application window - Chinese UI with fixed streaming
 """
 
-import asyncio
 import os
-import threading
 import uuid
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QMessageBox
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from typing import Optional
 
 from models.conversation import Conversation, Message
-from models.streaming import ConversationStreamState
 from models.provider import Provider
 from services.storage_service import StorageService
 from services.chat_service import ChatService
 from services.provider_service import ProviderService
+from controllers.stream_manager import StreamManager
 
 from .widgets.sidebar import Sidebar
 from .widgets.chat_view import ChatView
@@ -29,14 +27,6 @@ from .widgets.stats_panel import StatsPanel
 from .dialogs.settings_dialog import SettingsDialog
 from .dialogs.message_editor import MessageEditorDialog
 from .dialogs.conversation_settings_dialog import ConversationSettingsDialog
-
-
-class StreamingSignals(QObject):
-    """Signals for thread-safe UI updates during streaming"""
-    token_received = pyqtSignal(str, str, str)         # conversation_id, request_id, token
-    thinking_received = pyqtSignal(str, str, str)      # conversation_id, request_id, thinking
-    response_complete = pyqtSignal(str, str, object)   # conversation_id, request_id, Message
-    response_error = pyqtSignal(str, str, str)         # conversation_id, request_id, error
 
 
 class MainWindow(QMainWindow):
@@ -48,19 +38,17 @@ class MainWindow(QMainWindow):
         self.storage = StorageService()
         self.chat_service = ChatService()
         self.provider_service = ProviderService()
+        self.stream_manager = StreamManager(self.chat_service, parent=self)
         
         self.providers: list[Provider] = []
         self.current_conversation: Optional[Conversation] = None
-        # Per-conversation in-flight streaming (allows A/B concurrent generation).
-        self._streams: dict[str, ConversationStreamState] = {}
         self._app_settings: dict = {}
-        
-        # Streaming signals for thread-safe UI updates
-        self._signals = StreamingSignals()
-        self._signals.token_received.connect(self._on_token_received)
-        self._signals.thinking_received.connect(self._on_thinking_received)
-        self._signals.response_complete.connect(self._on_response_complete)
-        self._signals.response_error.connect(self._on_response_error)
+
+        # Streaming events (thread-safe; StreamManager normalizes + guards request_id)
+        self.stream_manager.token_received.connect(self._on_token_received)
+        self.stream_manager.thinking_received.connect(self._on_thinking_received)
+        self.stream_manager.response_complete.connect(self._on_response_complete)
+        self.stream_manager.response_error.connect(self._on_response_error)
         
         self._setup_ui()
         self._load_data()
@@ -248,7 +236,7 @@ class MainWindow(QMainWindow):
             if not self.current_conversation:
                 self.input_area.set_enabled(True)
                 return
-            self.input_area.set_enabled(self.current_conversation.id not in self._streams)
+            self.input_area.set_enabled(not self.stream_manager.is_streaming(self.current_conversation.id))
         except Exception:
             pass
     
@@ -305,7 +293,7 @@ class MainWindow(QMainWindow):
             )
 
             # Restore streaming UI if this conversation is currently generating.
-            stream_state = self._streams.get(conversation.id)
+            stream_state = self.stream_manager.get_state(conversation.id)
             if stream_state:
                 self.chat_view.start_streaming_response(model=stream_state.model)
                 self.chat_view.restore_streaming_state(
@@ -373,7 +361,7 @@ class MainWindow(QMainWindow):
             self.current_conversation = Conversation()
 
         # Per-conversation concurrency: block only if THIS conversation is generating.
-        if self.current_conversation.id in self._streams:
+        if self.stream_manager.is_streaming(self.current_conversation.id):
             QMessageBox.information(self, "提示", "当前会话正在生成中，请稍候或先取消生成。")
             return
         
@@ -440,87 +428,37 @@ class MainWindow(QMainWindow):
         if not conversation_id:
             return
 
-        request_id = str(uuid.uuid4())
-        model_name = (conversation.model or provider.default_model or "")
-        state = ConversationStreamState(
-            conversation_id=conversation_id,
-            request_id=request_id,
-            model=model_name,
+        debug_log_path = None
+        if bool(self._app_settings.get('log_stream', False)):
+            try:
+                debug_log_path = str(self.storage.data_dir / 'stream_debug.log')
+            except Exception:
+                debug_log_path = None
+
+        enable_thinking = bool((conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True)))
+
+        state = self.stream_manager.start(
+            provider,
+            conversation,
+            enable_thinking=enable_thinking,
+            debug_log_path=debug_log_path,
         )
-        self._streams[conversation_id] = state
+        if not state:
+            return
 
         # Only disable input / show streaming bubble when user is viewing this conversation.
         if self.current_conversation and self.current_conversation.id == conversation_id:
-            self.chat_view.start_streaming_response(model=model_name)
+            self.chat_view.start_streaming_response(model=state.model)
             self.chat_view.restore_streaming_state("", "")
         self._sync_input_enabled()
-
-        # Use a snapshot to avoid accidental cross-thread mutation.
-        try:
-            conversation_snapshot = Conversation.from_dict(conversation.to_dict())
-        except Exception:
-            conversation_snapshot = conversation
-
-        signals = self._signals
-        chat_service = self.chat_service
-        
-        def run_async():
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                async def chat():
-                    debug_log_path = None
-                    if bool(self._app_settings.get('log_stream', False)):
-                        try:
-                            debug_log_path = str(self.storage.data_dir / 'stream_debug.log')
-                        except Exception:
-                            debug_log_path = None
-
-                    return await chat_service.send_message(
-                        provider, conversation_snapshot,
-                        on_token=lambda t: signals.token_received.emit(conversation_id, request_id, t),
-                        on_thinking=lambda t: signals.thinking_received.emit(conversation_id, request_id, t),
-                        enable_thinking=bool((conversation_snapshot.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True))),
-                        debug_log_path=debug_log_path,
-                        cancel_event=state.cancel_event
-                    )
-                
-                response = loop.run_until_complete(chat())
-                loop.close()
-
-                signals.response_complete.emit(conversation_id, request_id, response)
-            except Exception as e:
-                signals.response_error.emit(conversation_id, request_id, str(e))
-        
-        thread = threading.Thread(target=run_async, daemon=True)
-        thread.start()
     
     def _on_token_received(self, conversation_id: str, request_id: str, token: str):
         """Handle token received during streaming - called from main thread."""
-        state = self._streams.get(conversation_id)
-        if not state or state.request_id != request_id:
-            return
-
-        try:
-            state.visible_text += str(token or "")
-        except Exception:
-            return
-
         if self.current_conversation and self.current_conversation.id == conversation_id:
             self.chat_view.append_streaming_content(token)
 
     def _on_thinking_received(self, conversation_id: str, request_id: str, thinking: str):
         """Handle thinking received during streaming - called from main thread."""
-        state = self._streams.get(conversation_id)
-        if not state or state.request_id != request_id:
-            return
-
-        try:
-            state.thinking_text += str(thinking or "")
-        except Exception:
-            pass
-
         if self.current_conversation and self.current_conversation.id == conversation_id:
             if bool((self.current_conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True))):
                 self.chat_view.append_streaming_thinking(thinking)
@@ -564,12 +502,6 @@ class MainWindow(QMainWindow):
     
     def _on_response_complete(self, conversation_id: str, request_id: str, response):
         """Handle response completion - called from main thread."""
-        state = self._streams.get(conversation_id)
-        if not state or state.request_id != request_id:
-            return
-
-        # Mark complete for this conversation.
-        self._streams.pop(conversation_id, None)
         self._sync_input_enabled()
 
         if not isinstance(response, Message):
@@ -616,11 +548,6 @@ class MainWindow(QMainWindow):
     
     def _on_response_error(self, conversation_id: str, request_id: str, error: str):
         """Handle response error - called from main thread."""
-        state = self._streams.get(conversation_id)
-        if not state or state.request_id != request_id:
-            return
-
-        self._streams.pop(conversation_id, None)
         self._sync_input_enabled()
 
         error_message = Message(role="assistant", content=f"未知错误: {error}")
@@ -645,9 +572,7 @@ class MainWindow(QMainWindow):
     def _cancel_generation(self):
         if not self.current_conversation:
             return
-        state = self._streams.get(self.current_conversation.id)
-        if state:
-            state.cancel()
+        self.stream_manager.cancel(self.current_conversation.id)
     
     def _edit_message(self, message_id: str):
         if not self.current_conversation:

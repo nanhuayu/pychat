@@ -17,6 +17,9 @@ from typing import Iterable, Tuple, List, Optional
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice
 from PyQt6.QtGui import QImage, QPixmap, QGuiApplication
 
+# Re-export for convenience (actual implementation in utils/image_encoding.py to avoid circular imports)
+from utils.image_encoding import encode_image_file_to_data_url
+
 
 _SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 
 from ui.main_window import MainWindow
 
@@ -37,6 +37,10 @@ def main():
     app.setApplicationName("PyChat")
     app.setOrganizationName("PyChat")
     app.setApplicationVersion("1.0.0")
+    
+    # Set application icon
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pycat.ico")
+    app.setWindowIcon(QIcon(icon_path))
     
     # Set default font
     font = QFont("Segoe UI", 10)

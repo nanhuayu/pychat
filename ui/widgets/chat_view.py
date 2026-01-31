@@ -3,10 +3,11 @@ Chat view widget - Compact responsive layout
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QFrame, QSizePolicy, QPushButton, QToolButton
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QFrame, QSizePolicy, QPushButton, QToolButton, QFileDialog
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QEvent
 from typing import List
+import os
 from datetime import datetime
 
 from models.conversation import Message, Conversation
@@ -20,6 +21,7 @@ class ChatView(QWidget):
     edit_message = pyqtSignal(str)
     delete_message = pyqtSignal(str)
     images_dropped = pyqtSignal(list)
+    work_dir_changed = pyqtSignal(str)  # Signal emitted when workspace directory changes
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,6 +52,37 @@ class ChatView(QWidget):
         header_layout.setContentsMargins(10, 0, 10, 0)
         header_layout.setSpacing(6)
         
+        # ===== Workspace/Folder Button =====
+        self.work_dir_btn = QPushButton("📁 未设置工作区")
+        self.work_dir_btn.setObjectName("work_dir_btn")
+        self.work_dir_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.work_dir_btn.setToolTip("点击设置当前会话的工作目录 (用于 MCP/CMD 执行)")
+        self.work_dir_btn.clicked.connect(self._select_work_dir)
+        # Style: transparent background, icon + text
+        self.work_dir_btn.setStyleSheet("""
+            QPushButton {
+                border: none;
+                border-radius: 4px;
+                padding: 2px 8px;
+                text-align: left;
+                font-size: 12px;
+                color: #666;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 0, 0, 0.05);
+                color: #333;
+            }
+        """)
+        header_layout.addWidget(self.work_dir_btn)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        sep.setFixedHeight(16)
+        sep.setStyleSheet("color: #ccc;")
+        header_layout.addWidget(sep)
+
         self.model_indicator = QLabel("未选择模型")
         self.model_indicator.setObjectName("model_indicator")
         header_layout.addWidget(self.model_indicator)
@@ -165,16 +198,43 @@ class ChatView(QWidget):
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         return btn
     
-    def update_header(self, provider_name: str = "", model: str = "", msg_count: int = 0):
-        """Update header bar with current model info"""
-        if provider_name and model:
-            self.model_indicator.setText(f"🤖 {model} | {provider_name}")
-        elif model:
-            self.model_indicator.setText(f"🤖 {model}")
-        else:
-            self.model_indicator.setText("未选择模型")
+    def _select_work_dir(self):
+        """Open dialog to select workspace directory"""
+        current_dir = ""
+        # Try to get current path from button tooltip or text if possible, 
+        # but better to rely on state passed from controller. 
+        # For now, start from current working directory or last used.
+        
+        path = QFileDialog.getExistingDirectory(
+            self, 
+            "选择工作区文件夹",
+            current_dir,
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks
+        )
+        
+        if path:
+            self.update_work_dir(path)
+            self.work_dir_changed.emit(path)
 
-        self._update_nav_state()
+    def update_work_dir(self, path: str):
+        """Update workspace directory display"""
+        if not path:
+            self.work_dir_btn.setText("📁 未设置工作区")
+            self.work_dir_btn.setToolTip("点击设置当前会话的工作目录")
+        else:
+            name = os.path.basename(path)
+            if not name: # Root directory like C:/
+                name = path
+            self.work_dir_btn.setText(f"📁 {name}")
+            self.work_dir_btn.setToolTip(f"工作区: {path}")
+
+    def update_header(self, provider_name: str, model: str, msg_count: int = 0):
+        """Update header info"""
+        text = f"{provider_name} / {model}" if provider_name else model or "未选择模型"
+        if msg_count > 0:
+            text += f" ({msg_count})"
+        self.model_indicator.setText(text)
+        self.model_indicator.setToolTip(text)
     
     def clear(self):
         while self.messages_layout.count() > 1:

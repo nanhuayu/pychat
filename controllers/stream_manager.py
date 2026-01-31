@@ -168,8 +168,9 @@ class StreamManager(QObject):
                             # self._raw_token.emit(conversation_id, request_id, f"\n[Executing {tool_name}...]\n")
                             
                             # Execute
+                            work_dir = getattr(current_conversation, "work_dir", "")
                             result_text = loop.run_until_complete(
-                                mcp_manager.call_tool(tool_name, tool_args)
+                                mcp_manager.call_tool(tool_name, tool_args, work_dir=work_dir)
                             )
                             
                             # Create Tool Message

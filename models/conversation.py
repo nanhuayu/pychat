@@ -141,6 +141,7 @@ class Conversation:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     total_tokens: int = 0
+    work_dir: str = ""  # Associated workspace directory
     settings: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -154,6 +155,7 @@ class Conversation:
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
             'total_tokens': self.total_tokens,
+            'work_dir': self.work_dir,
             'settings': self.settings
         }
 
@@ -183,6 +185,7 @@ class Conversation:
             created_at=created_at,
             updated_at=updated_at,
             total_tokens=data.get('total_tokens', 0),
+            work_dir=data.get('work_dir', ''),
             settings=data.get('settings', {})
         )
 

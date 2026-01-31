@@ -56,13 +56,17 @@ class McpManager:
         # Built-in "default MCP" tools (no external server required)
         self._workspace_root = Path(os.getcwd()).resolve()
 
-    def _resolve_path_in_workspace(self, p: str) -> Path:
+    def _resolve_path_in_workspace(self, p: str, work_dir: Optional[Path] = None) -> Path:
         p = (p or ".").strip() or "."
-        candidate = (self._workspace_root / p).resolve() if not os.path.isabs(p) else Path(p).resolve()
+        root = work_dir if work_dir else self._workspace_root
+        candidate = (root / p).resolve() if not os.path.isabs(p) else Path(p).resolve()
         try:
-            candidate.relative_to(self._workspace_root)
+            candidate.relative_to(root)
         except Exception:
-            raise ValueError("Path is outside workspace")
+            # Allow reading files outside workspace if explicitly requested? 
+            # For security, strict workspace is better. But user might want to access anything.
+            # Let's keep it strict for now but relative to the dynamic root.
+            raise ValueError(f"Path is outside workspace: {root}")
         return candidate
 
     def _builtin_tools(self) -> List[Dict[str, Any]]:
@@ -252,8 +256,16 @@ class McpManager:
         self._tools_cache = tools_list
         return tools_list
 
-    async def call_tool(self, tool_name: str, arguments: dict) -> Any:
+    async def call_tool(self, tool_name: str, arguments: dict, work_dir: Optional[str] = None) -> Any:
         """Execute a tool. Handles both search and MCP tools."""
+        
+        # Determine effective workspace root
+        effective_root = self._workspace_root
+        if work_dir and os.path.isdir(work_dir):
+            try:
+                effective_root = Path(work_dir).resolve()
+            except Exception:
+                pass
 
         # Ensure configs are loaded
         if not self.servers:
@@ -294,7 +306,7 @@ class McpManager:
             max_entries = int(arguments.get("maxEntries", 200) or 200)
             max_entries = max(1, min(max_entries, 2000))
             try:
-                base = self._resolve_path_in_workspace(str(path))
+                base = self._resolve_path_in_workspace(str(path), work_dir=effective_root)
             except Exception as e:
                 return f"Invalid path: {e}"
 
@@ -305,7 +317,7 @@ class McpManager:
 
             def add_entry(p: Path):
                 try:
-                    rel = str(p.relative_to(self._workspace_root)).replace("\\", "/")
+                    rel = str(p.relative_to(effective_root)).replace("\\", "/")
                 except Exception:
                     rel = str(p)
                 try:
@@ -337,7 +349,7 @@ class McpManager:
             except Exception as e:
                 return f"List error: {e}"
 
-            return json.dumps({"root": str(self._workspace_root).replace("\\", "/"), "entries": entries}, ensure_ascii=False, indent=2)
+            return json.dumps({"root": str(effective_root).replace("\\", "/"), "entries": entries}, ensure_ascii=False, indent=2)
 
         if tool_name == "builtin_filesystem_read":
             if not isinstance(arguments, dict):
@@ -347,12 +359,15 @@ class McpManager:
             max_bytes = max(100, min(max_bytes, 200000))
             if not path:
                 return "Missing 'path'"
+
             try:
-                file_path = self._resolve_path_in_workspace(path)
+                file_path = self._resolve_path_in_workspace(path, work_dir=effective_root)
             except Exception as e:
                 return f"Invalid path: {e}"
-            if not file_path.exists() or not file_path.is_file():
+            
+            if not file_path.is_file():
                 return f"Not a file: {file_path}"
+            
             try:
                 data = file_path.read_bytes()[:max_bytes]
                 try:
@@ -375,7 +390,7 @@ class McpManager:
             if not isinstance(pattern, str) or not pattern:
                 return "Missing 'pattern'"
             try:
-                root_path = self._resolve_path_in_workspace(str(root))
+                root_path = self._resolve_path_in_workspace(str(root), work_dir=effective_root)
             except Exception as e:
                 return f"Invalid path: {e}"
             if not root_path.exists() or not root_path.is_dir():
@@ -400,7 +415,7 @@ class McpManager:
                 for i, line in enumerate(content.splitlines(), 1):
                     if rx.search(line):
                         try:
-                            rel = str(p.relative_to(self._workspace_root)).replace("\\", "/")
+                            rel = str(p.relative_to(effective_root)).replace("\\", "/")
                         except Exception:
                             rel = str(p)
                         matches.append({"path": rel, "line": i, "text": line[:300]})
@@ -418,7 +433,7 @@ class McpManager:
                 return "Missing 'code'"
             timeout_sec = max(1.0, min(timeout_sec, 60.0))
             try:
-                cwd_path = self._resolve_path_in_workspace(str(cwd))
+                cwd_path = self._resolve_path_in_workspace(str(cwd), work_dir=effective_root)
             except Exception as e:
                 return f"Invalid cwd: {e}"
 

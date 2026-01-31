@@ -304,7 +304,9 @@ class MainWindow(QMainWindow):
                 model=conversation.model or "",
                 msg_count=len(conversation.messages)
             )
-            self.chat_view.update_work_dir(getattr(conversation, 'work_dir', ""))
+            work_dir = getattr(conversation, 'work_dir', "")
+            self.chat_view.update_work_dir(work_dir)
+            self.input_area.set_work_dir(work_dir)
 
             # Restore streaming UI if this conversation is currently generating.
             stream_state = self.stream_manager.get_state(conversation.id)
@@ -323,12 +325,14 @@ class MainWindow(QMainWindow):
         self.stats_panel.update_stats(None)
         self.chat_view.update_header(provider_name="", model="", msg_count=0)
         self.chat_view.update_work_dir("")
+        self.input_area.set_work_dir("")
         self._sync_input_enabled()
 
     def _on_work_dir_changed(self, path: str):
         """Handle workspace directory change"""
         if self.current_conversation:
             self.current_conversation.work_dir = path
+            self.input_area.set_work_dir(path)
             self.storage.save_conversation(self.current_conversation)
             # Maybe show a toast or status bar message?
     

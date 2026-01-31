@@ -126,6 +126,7 @@ class InputArea(QWidget):
         # ===== Main input wrapper =====
         input_wrapper = QFrame()
         input_wrapper.setObjectName("input_wrapper")
+        input_wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         wrapper_layout = QVBoxLayout(input_wrapper)
         wrapper_layout.setContentsMargins(4, 4, 4, 4)
@@ -136,7 +137,7 @@ class InputArea(QWidget):
         self.text_input.setObjectName("message_input")
         self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，支持粘贴截图/拖拽图片)")
         self.text_input.setMinimumHeight(40)
-        self.text_input.setMaximumHeight(120)
+        # self.text_input.setMaximumHeight(120)  # Removed to allow expansion in splitter
         self.text_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.text_input.send_requested.connect(self._send_message)
         self.text_input.attachments_received.connect(self.add_images)

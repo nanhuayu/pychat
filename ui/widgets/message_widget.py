@@ -7,12 +7,80 @@ from PyQt6.QtWidgets import (
     QPushButton, QFrame, QSizePolicy, QToolButton, QTextBrowser, QAbstractScrollArea
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
-from PyQt6.QtGui import QPixmap, QTextOption, QGuiApplication
+from PyQt6.QtGui import QTextOption, QGuiApplication
 import math
+
+try:
+    import markdown
+except ImportError:
+    markdown = None
 
 from models.conversation import Message
 from ui.dialogs.image_viewer import ImageViewerDialog
 from ui.utils.image_loader import load_pixmap
+
+
+MARKDOWN_CSS = """
+<style>
+    /* Global font settings are inherited from widget, but we can enforce some defaults */
+    p { margin-bottom: 8px; margin-top: 0; }
+    
+    /* Headings */
+    h1, h2, h3, h4, h5, h6 { 
+        margin-top: 16px; margin-bottom: 8px; 
+        font-weight: 600; 
+    }
+    
+    /* Code blocks */
+    pre { 
+        background-color: rgba(128, 128, 128, 0.15); 
+        padding: 10px; 
+        border-radius: 6px; 
+        margin: 8px 0;
+    }
+    code { 
+        background-color: rgba(128, 128, 128, 0.15); 
+        padding: 2px 4px; 
+        border-radius: 4px;
+        font-family: "Consolas", "Monaco", monospace;
+    }
+    pre code {
+        background-color: transparent;
+        padding: 0;
+        border-radius: 0;
+    }
+    
+    /* Tables - Single line borders via border-collapse */
+    table { 
+        border-collapse: collapse; 
+        width: 100%; 
+        margin: 10px 0; 
+        border: 1px solid rgba(128, 128, 128, 0.3);
+    }
+    th { 
+        background-color: rgba(128, 128, 128, 0.1); 
+        font-weight: 700; 
+        padding: 6px; 
+        border: 1px solid rgba(128, 128, 128, 0.3);
+        text-align: left;
+    }
+    td { 
+        padding: 6px; 
+        border: 1px solid rgba(128, 128, 128, 0.3);
+    }
+    
+    /* Blockquotes */
+    blockquote { 
+        border-left: 4px solid rgba(128, 128, 128, 0.3); 
+        padding-left: 10px; 
+        margin: 8px 0; 
+        color: rgba(128, 128, 128, 0.8);
+    }
+    
+    /* Links */
+    a { color: #2962ff; text-decoration: none; }
+</style>
+"""
 
 
 class ImageThumbnail(QLabel):
@@ -41,13 +109,11 @@ class ImageThumbnail(QLabel):
                 self.setProperty("state", "placeholder")
                 self.setText("IMG")
                 self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            self.style().unpolish(self)
-            self.style().polish(self)
         except Exception:
             self.setProperty("state", "error")
             self.setText("⚠️")
             self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        finally:
             self.style().unpolish(self)
             self.style().polish(self)
     
@@ -99,11 +165,6 @@ class MessageWidget(QFrame):
     def _setup_ui(self):
         is_user = self.message.role == 'user'
 
-        def _shorten(text: str, max_len: int = 22) -> str:
-            if not text:
-                return ""
-            return text if len(text) <= max_len else (text[: max_len - 1] + "…")
-
         # Themeable styling via QSS
         self.setObjectName("message_widget")
         self.setProperty("role", "user" if is_user else "assistant")
@@ -124,62 +185,19 @@ class MessageWidget(QFrame):
         header.addWidget(role_label)
 
         # Model + timestamp (from metadata / created_at)
-        model = None
-        if isinstance(self.message.metadata, dict):
-            model = self.message.metadata.get('model') or self.message.metadata.get('model_name')
-        if model:
-            model_label = QLabel(_shorten(str(model)))
-            model_label.setObjectName("message_badge")
-            model_label.setToolTip(str(model))
-            header.addWidget(model_label)
-
-        try:
-            ts = self.message.created_at.strftime('%m-%d %H:%M')
-        except Exception:
-            ts = ""
-        if ts:
-            ts_label = QLabel(ts)
-            ts_label.setObjectName("message_badge")
-            header.addWidget(ts_label)
+        self._add_model_badge(header)
+        self._add_timestamp_badge(header)
         
         # Stats - compact badges
         if self.message.tokens:
-            token_label = QLabel(f"T:{self.message.tokens}")
-            token_label.setObjectName("message_badge")
-            header.addWidget(token_label)
+            self._add_badge(header, f"T:{self.message.tokens}")
         
         if self.message.response_time_ms:
-            time_label = QLabel(f"{self.message.response_time_ms / 1000:.1f}s")
-            time_label.setObjectName("message_badge")
-            header.addWidget(time_label)
+            self._add_badge(header, f"{self.message.response_time_ms / 1000:.1f}s")
         
         header.addStretch()
 
-        copy_btn = QToolButton()
-        copy_btn.setText("⧉")
-        copy_btn.setToolTip("复制原文")
-        copy_btn.setFixedSize(26, 22)
-        copy_btn.setObjectName("msg_copy_btn")
-        copy_btn.clicked.connect(self._copy_original_content)
-        self._copy_btn = copy_btn
-        header.addWidget(copy_btn)
-        
-        # Compact action buttons (icon-only)
-        edit_btn = QToolButton()
-        edit_btn.setText("🖊")
-        edit_btn.setToolTip("编辑")
-        edit_btn.setFixedSize(26, 22)
-        edit_btn.setObjectName("msg_edit_btn")
-        edit_btn.clicked.connect(lambda: self.edit_requested.emit(self.message.id))
-        header.addWidget(edit_btn)
-
-        delete_btn = QToolButton()
-        delete_btn.setText("✕")
-        delete_btn.setToolTip("删除")
-        delete_btn.setFixedSize(26, 22)
-        delete_btn.setObjectName("msg_delete_btn")
-        delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.message.id))
-        header.addWidget(delete_btn)
+        self._add_action_buttons(header)
         
         layout.addLayout(header)
 
@@ -188,24 +206,76 @@ class MessageWidget(QFrame):
             layout.addWidget(ThinkingSection(self.message.thinking))
         
         # Content
-        content_text = self.message.content
-        if not isinstance(content_text, str):
-            content_text = str(content_text)
-        content_view = MarkdownView(content_text)
+        # MarkdownView handles str conversion
+        content_view = MarkdownView(self.message.content)
         content_view.setObjectName("message_content")
         content_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout.addWidget(content_view)
         
         # Images
         if self.message.images:
-            images_layout = QHBoxLayout()
-            images_layout.setSpacing(4)
-            for image_data in self.message.images[:4]:
-                thumb = ImageThumbnail(image_data)
-                thumb.clicked.connect(lambda _=None, d=image_data: self._open_image_preview(d))
-                images_layout.addWidget(thumb)
-            images_layout.addStretch()
-            layout.addLayout(images_layout)
+            self._add_images(layout)
+
+    def _add_model_badge(self, layout):
+        model = None
+        if isinstance(self.message.metadata, dict):
+            model = self.message.metadata.get('model') or self.message.metadata.get('model_name')
+        if model:
+            text = str(model)
+            if len(text) > 22:
+                text = text[:21] + "…"
+            model_label = QLabel(text)
+            model_label.setObjectName("message_badge")
+            model_label.setToolTip(str(model))
+            layout.addWidget(model_label)
+
+    def _add_timestamp_badge(self, layout):
+        try:
+            ts = self.message.created_at.strftime('%m-%d %H:%M')
+            self._add_badge(layout, ts)
+        except Exception:
+            pass
+
+    def _add_badge(self, layout, text):
+        label = QLabel(text)
+        label.setObjectName("message_badge")
+        layout.addWidget(label)
+
+    def _add_action_buttons(self, layout):
+        copy_btn = QToolButton()
+        copy_btn.setText("⧉")
+        copy_btn.setToolTip("复制原文")
+        copy_btn.setFixedSize(26, 22)
+        copy_btn.setObjectName("msg_copy_btn")
+        copy_btn.clicked.connect(self._copy_original_content)
+        self._copy_btn = copy_btn
+        layout.addWidget(copy_btn)
+        
+        edit_btn = QToolButton()
+        edit_btn.setText("🖊")
+        edit_btn.setToolTip("编辑")
+        edit_btn.setFixedSize(26, 22)
+        edit_btn.setObjectName("msg_edit_btn")
+        edit_btn.clicked.connect(lambda: self.edit_requested.emit(self.message.id))
+        layout.addWidget(edit_btn)
+
+        delete_btn = QToolButton()
+        delete_btn.setText("✕")
+        delete_btn.setToolTip("删除")
+        delete_btn.setFixedSize(26, 22)
+        delete_btn.setObjectName("msg_delete_btn")
+        delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.message.id))
+        layout.addWidget(delete_btn)
+
+    def _add_images(self, layout):
+        images_layout = QHBoxLayout()
+        images_layout.setSpacing(4)
+        for image_data in self.message.images[:4]:
+            thumb = ImageThumbnail(image_data)
+            thumb.clicked.connect(lambda _=None, d=image_data: self._open_image_preview(d))
+            images_layout.addWidget(thumb)
+        images_layout.addStretch()
+        layout.addLayout(images_layout)
 
     def _copy_original_content(self) -> None:
         text = str(self.message.content or "")
@@ -216,20 +286,15 @@ class MessageWidget(QFrame):
 
         try:
             self._copy_btn.setToolTip("已复制")
-            
-            def restore():
-                try:
-                    self._copy_btn.setToolTip("复制原文")
-                except RuntimeError:
-                    # Button deleted
-                    pass
-            
-            QTimer.singleShot(1200, restore)
+            QTimer.singleShot(1200, self._restore_copy_btn_tooltip)
         except RuntimeError:
-            # Button already deleted
             pass
-        
-
+    
+    def _restore_copy_btn_tooltip(self):
+        try:
+            self._copy_btn.setToolTip("复制原文")
+        except RuntimeError:
+            pass
 
     def _open_image_preview(self, image_data: str):
         dialog = ImageViewerDialog(image_data, self)
@@ -237,13 +302,7 @@ class MessageWidget(QFrame):
 
 
 class MarkdownView(QTextBrowser):
-    """A compact, auto-height markdown-capable viewer.
-
-    Rationale:
-    - QLabel wordWrap won't break very long runs (JSON/base64/stream chunks).
-    - QTextBrowser can wrap anywhere and render Markdown via QTextDocument.
-    - Auto height avoids nested scrollbars inside message bubbles.
-    """
+    """A compact, auto-height markdown-capable viewer."""
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(parent)
@@ -261,9 +320,15 @@ class MarkdownView(QTextBrowser):
         opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         doc.setDefaultTextOption(opt)
         doc.setDocumentMargin(0)
+        
+        # Debounce resize events
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(0)
+        self._resize_timer.timeout.connect(self._update_height)
 
         try:
-            doc.documentLayout().documentSizeChanged.connect(lambda *_: self._schedule_update_height())
+            doc.documentLayout().documentSizeChanged.connect(self._schedule_update_height)
         except Exception:
             pass
 
@@ -272,35 +337,39 @@ class MarkdownView(QTextBrowser):
     def set_markdown(self, text: str) -> None:
         if text is None:
             text = ""
-        if not isinstance(text, str):
-            text = str(text)
+        text = str(text)
 
-        try:
-            self.document().setMarkdown(text)
-        except Exception:
-            self.setPlainText(text)
+        if markdown:
+            try:
+                extensions = ['fenced_code', 'tables', 'sane_lists']
+                html = markdown.markdown(text, extensions=extensions)
+                self.setHtml(MARKDOWN_CSS + html)
+            except Exception:
+                self.document().setMarkdown(text)
+        else:
+            try:
+                self.document().setMarkdown(text)
+            except Exception:
+                self.setPlainText(text)
+                
         self._schedule_update_height()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._schedule_update_height()
 
-    def _schedule_update_height(self) -> None:
-        # Defer to next event loop so QTextDocument finishes layout.
-        QTimer.singleShot(0, self._update_height)
+    def _schedule_update_height(self, *_args) -> None:
+        self._resize_timer.start()
 
-    def _update_height(self, *_args) -> None:
+    def _update_height(self) -> None:
         try:
-            # Ensure the document is laid out to the current viewport width.
             w = max(1, self.viewport().width())
             self.document().setTextWidth(w)
-
             size = self.document().documentLayout().documentSize()
             h = int(math.ceil(size.height()))
         except Exception:
             h = 0
 
-        # Extra padding avoids clipping on some fonts/styles (dark theme was affected).
         target = max(18, h + 12)
         if self.height() != target:
             self.setFixedHeight(target)

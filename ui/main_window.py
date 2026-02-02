@@ -537,11 +537,8 @@ class MainWindow(QMainWindow):
         target_conv = self.current_conversation if (self.current_conversation and self.current_conversation.id == conversation_id) else self.storage.load_conversation(conversation_id)
         
         if target_conv:
-            # target_conv.add_message(message) 
-            # Note: add_message might auto-update IDs? Use append if simple. 
-            # Check conversation.py. add_message is safer.
-            # But add_message is part of Conversation class? yes.
-            target_conv.messages.append(message)
+            # Use add_message to handle tool result merging automatically
+            target_conv.add_message(message)
             self.storage.save_conversation(target_conv)
             
             if self.current_conversation and self.current_conversation.id == conversation_id:
@@ -654,8 +651,9 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            self.current_conversation.delete_message(message_id)
-            self.chat_view.remove_message(message_id)
+            deleted_ids = self.current_conversation.delete_message(message_id) or []
+            for mid in deleted_ids:
+                self.chat_view.remove_message(mid)
             self.stats_panel.update_stats(self.current_conversation)
             self.storage.save_conversation(self.current_conversation)
 

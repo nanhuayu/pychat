@@ -2,13 +2,16 @@
 Message widget for displaying individual messages - Responsive layout
 """
 
+import json
+import math
+from typing import List, Optional, Any
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QSizePolicy, QToolButton, QTextBrowser, QAbstractScrollArea
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
-from PyQt6.QtGui import QTextOption, QGuiApplication
-import math
+from PyQt6.QtGui import QTextOption, QGuiApplication, QCursor
 
 try:
     import markdown
@@ -22,7 +25,6 @@ from ui.utils.image_loader import load_pixmap
 
 MARKDOWN_CSS = """
 <style>
-    /* Global font settings are inherited from widget, but we can enforce some defaults */
     p { margin-bottom: 8px; margin-top: 0; }
     
     /* Headings */
@@ -50,7 +52,7 @@ MARKDOWN_CSS = """
         border-radius: 0;
     }
     
-    /* Tables - Single line borders via border-collapse */
+    /* Tables */
     table { 
         border-collapse: collapse; 
         width: 100%; 
@@ -121,8 +123,82 @@ class ImageThumbnail(QLabel):
         self.clicked.emit()
 
 
+class MarkdownView(QTextBrowser):
+    """A compact, auto-height markdown-capable viewer."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setOpenExternalLinks(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+
+        doc = self.document()
+        opt = doc.defaultTextOption()
+        opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        doc.setDefaultTextOption(opt)
+        doc.setDocumentMargin(0)
+        
+        # Debounce resize events
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(0)
+        self._resize_timer.timeout.connect(self._update_height)
+
+        try:
+            doc.documentLayout().documentSizeChanged.connect(self._schedule_update_height)
+        except Exception:
+            pass
+
+        self.set_markdown(text)
+
+    def set_markdown(self, text: str) -> None:
+        if text is None:
+            text = ""
+        text = str(text)
+
+        if markdown:
+            try:
+                extensions = ['fenced_code', 'tables', 'sane_lists']
+                html = markdown.markdown(text, extensions=extensions)
+                self.setHtml(MARKDOWN_CSS + html)
+            except Exception:
+                self.document().setMarkdown(text)
+        else:
+            try:
+                self.document().setMarkdown(text)
+            except Exception:
+                self.setPlainText(text)
+                
+        self._schedule_update_height()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_update_height()
+
+    def _schedule_update_height(self, *_args) -> None:
+        self._resize_timer.start()
+
+    def _update_height(self) -> None:
+        try:
+            w = max(1, self.viewport().width())
+            self.document().setTextWidth(w)
+            size = self.document().documentLayout().documentSize()
+            h = int(math.ceil(size.height()))
+        except Exception:
+            h = 0
+
+        target = max(18, h + 12)
+        if self.height() != target:
+            self.setFixedHeight(target)
+
+
 class ThinkingSection(QWidget):
-    """Collapsible thinking section"""
+    """Collapsible thinking section - Concise Style"""
     
     def __init__(self, thinking_content: str, parent=None):
         super().__init__(parent)
@@ -132,11 +208,16 @@ class ThinkingSection(QWidget):
     
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(0)
         
-        self.toggle_btn = QPushButton("思考")
+        self.toggle_btn = QToolButton()
         self.toggle_btn.setObjectName("thinking_toggle")
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.toggle_btn.setText("💭 思考过程")
+        
         self.toggle_btn.clicked.connect(self._toggle)
         layout.addWidget(self.toggle_btn)
         
@@ -148,7 +229,126 @@ class ThinkingSection(QWidget):
     def _toggle(self):
         self.is_expanded = not self.is_expanded
         self.content_widget.setVisible(self.is_expanded)
-        self.toggle_btn.setText("收起思考" if self.is_expanded else "思考")
+        self.toggle_btn.setText("💭 思考过程" if not self.is_expanded else "💭 收起思考")
+
+
+class ToolCallItem(QWidget):
+    """Widget for a single tool call with collapsible details - Concise Style"""
+    
+    def __init__(self, tool_call: dict, parent=None):
+        super().__init__(parent)
+        self.tool_call = tool_call
+        self.tool_id = tool_call.get('id')
+        self.is_expanded = False
+        self._setup_ui()
+        
+        # Auto-set result if present in tool_call data
+        if 'result' in self.tool_call:
+            self.set_result(self.tool_call['result'])
+        
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(0)
+        
+        # Header (Toggle button)
+        self.toggle_btn = QToolButton()
+        self.toggle_btn.setObjectName("tool_call_header")
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        
+        func = self.tool_call.get('function', {})
+        name = func.get('name', 'unknown_tool')
+        
+        # Initial state is "Running"
+        self.toggle_btn.setText(f"⏳ 正在使用 {name}...")
+        self.toggle_btn.clicked.connect(self._toggle)
+        layout.addWidget(self.toggle_btn)
+        
+        # Details container (Args + Result)
+        self.details_widget = QWidget()
+        self.details_widget.setVisible(False)
+        
+        details_layout = QVBoxLayout(self.details_widget)
+        details_layout.setContentsMargins(0, 4, 0, 4)
+        details_layout.setSpacing(8)
+        
+        # Arguments (Monospace, minimal)
+        args_str = func.get('arguments', '{}')
+        try:
+            args_obj = json.loads(args_str)
+            args_display = json.dumps(args_obj, indent=2, ensure_ascii=False)
+        except:
+            args_display = args_str
+            
+        args_label = QLabel("输入参数:")
+        args_label.setStyleSheet("font-size: 11px; font-weight: bold; color: #888;")
+        details_layout.addWidget(args_label)
+        
+        self.args_view = QTextBrowser()
+        self.args_view.setPlainText(args_display)
+        self.args_view.setMaximumHeight(120)
+        details_layout.addWidget(self.args_view)
+        
+        # Result section
+        self.result_label = QLabel("执行结果:")
+        self.result_label.setStyleSheet("font-size: 11px; font-weight: bold; color: #888; margin-top: 4px;")
+        self.result_label.setVisible(False)
+        details_layout.addWidget(self.result_label)
+        
+        self.result_view = MarkdownView("")
+        self.result_view.setVisible(False)
+        details_layout.addWidget(self.result_view)
+        
+        layout.addWidget(self.details_widget)
+        
+    def _toggle(self):
+        self.is_expanded = not self.is_expanded
+        self.details_widget.setVisible(self.is_expanded)
+        
+    def set_result(self, result: str):
+        self.result_label.setVisible(True)
+        self.result_view.setVisible(True)
+        self.result_view.set_markdown(result)
+        
+        func = self.tool_call.get('function', {})
+        name = func.get('name', 'unknown_tool')
+        self.toggle_btn.setText(f"✓ 已完成: {name}")
+
+    def update_content(self):
+        """Refresh content from tool_call data"""
+        if 'result' in self.tool_call:
+            self.set_result(self.tool_call['result'])
+
+
+class ToolCallsSection(QWidget):
+    """Container for multiple tool calls"""
+    
+    def __init__(self, tool_calls: List[dict], parent=None):
+        super().__init__(parent)
+        self.tool_calls = tool_calls
+        self.items = {}
+        self._setup_ui()
+        
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(2)
+        
+        for tool_call in self.tool_calls:
+            item = ToolCallItem(tool_call)
+            self.items[tool_call.get('id')] = item
+            layout.addWidget(item)
+            
+    def update_result(self, tool_id: str, result: str):
+        if tool_id in self.items:
+            self.items[tool_id].set_result(result)
+            
+    def refresh_all(self):
+        """Refresh all items from their underlying data"""
+        for item in self.items.values():
+            item.update_content()
 
 
 class MessageWidget(QFrame):
@@ -207,14 +407,36 @@ class MessageWidget(QFrame):
         
         # Content
         # MarkdownView handles str conversion
-        content_view = MarkdownView(self.message.content)
-        content_view.setObjectName("message_content")
-        content_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        layout.addWidget(content_view)
+        if self.message.content:
+            content_view = MarkdownView(self.message.content)
+            content_view.setObjectName("message_content")
+            content_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            layout.addWidget(content_view)
         
+        # Tool Calls (assistant only)
+        if (not is_user) and self.message.tool_calls:
+            self.tool_calls_widget = ToolCallsSection(self.message.tool_calls)
+            layout.addWidget(self.tool_calls_widget)
+
         # Images
         if self.message.images:
             self._add_images(layout)
+
+    def has_tool_call(self, tool_id: str) -> bool:
+        """Check if this message contains a tool call with the given ID"""
+        if not self.message.tool_calls:
+            return False
+        return any(tc.get('id') == tool_id for tc in self.message.tool_calls)
+
+    def add_tool_result(self, tool_message: Message):
+        """Update tool call UI with result"""
+        if hasattr(self, 'tool_calls_widget') and tool_message.tool_call_id:
+            self.tool_calls_widget.update_result(tool_message.tool_call_id, tool_message.content)
+
+    def refresh_tool_calls(self):
+        """Refresh tool calls display from message data"""
+        if hasattr(self, 'tool_calls_widget'):
+            self.tool_calls_widget.refresh_all()
 
     def _add_model_badge(self, layout):
         model = None
@@ -299,77 +521,3 @@ class MessageWidget(QFrame):
     def _open_image_preview(self, image_data: str):
         dialog = ImageViewerDialog(image_data, self)
         dialog.exec()
-
-
-class MarkdownView(QTextBrowser):
-    """A compact, auto-height markdown-capable viewer."""
-
-    def __init__(self, text: str = "", parent=None):
-        super().__init__(parent)
-        self.setReadOnly(True)
-        self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setOpenExternalLinks(True)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
-
-        doc = self.document()
-        opt = doc.defaultTextOption()
-        opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        doc.setDefaultTextOption(opt)
-        doc.setDocumentMargin(0)
-        
-        # Debounce resize events
-        self._resize_timer = QTimer(self)
-        self._resize_timer.setSingleShot(True)
-        self._resize_timer.setInterval(0)
-        self._resize_timer.timeout.connect(self._update_height)
-
-        try:
-            doc.documentLayout().documentSizeChanged.connect(self._schedule_update_height)
-        except Exception:
-            pass
-
-        self.set_markdown(text)
-
-    def set_markdown(self, text: str) -> None:
-        if text is None:
-            text = ""
-        text = str(text)
-
-        if markdown:
-            try:
-                extensions = ['fenced_code', 'tables', 'sane_lists']
-                html = markdown.markdown(text, extensions=extensions)
-                self.setHtml(MARKDOWN_CSS + html)
-            except Exception:
-                self.document().setMarkdown(text)
-        else:
-            try:
-                self.document().setMarkdown(text)
-            except Exception:
-                self.setPlainText(text)
-                
-        self._schedule_update_height()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._schedule_update_height()
-
-    def _schedule_update_height(self, *_args) -> None:
-        self._resize_timer.start()
-
-    def _update_height(self) -> None:
-        try:
-            w = max(1, self.viewport().width())
-            self.document().setTextWidth(w)
-            size = self.document().documentLayout().documentSize()
-            h = int(math.ceil(size.height()))
-        except Exception:
-            h = 0
-
-        target = max(18, h + 12)
-        if self.height() != target:
-            self.setFixedHeight(target)

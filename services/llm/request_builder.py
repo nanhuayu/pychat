@@ -53,7 +53,13 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
 
         # Add tool_calls if present (assistant role)
         if msg.tool_calls:
-            message_payload["tool_calls"] = msg.tool_calls
+            # Create a clean copy of tool_calls for the API (exclude 'result' field)
+            clean_tool_calls = []
+            for tc in msg.tool_calls:
+                clean_tc = {k: v for k, v in tc.items() if k in ('id', 'type', 'function')}
+                clean_tool_calls.append(clean_tc)
+            
+            message_payload["tool_calls"] = clean_tool_calls
             if not message_payload["content"]:
                 message_payload["content"] = None
 
@@ -64,6 +70,16 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
             message_payload[key] = msg.thinking
         
         api_messages.append(message_payload)
+
+        # Expand tool results into separate messages
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                if 'result' in tc:
+                    api_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get('id'),
+                        "content": tc.get('result')
+                    })
 
     return api_messages
 

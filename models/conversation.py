@@ -200,11 +200,31 @@ class Conversation:
         return cls.from_dict(data)
 
     def add_message(self, message: Message):
-        """Add a message to the conversation"""
+        """Add a message to the conversation.
+           If the message is a tool result (role='tool'), try to merge it into the existing assistant message.
+        """
+        if message.role == 'tool' and message.tool_call_id:
+            if self._try_merge_tool_result(message):
+                return
+
+        # Normal append
         self.messages.append(message)
         if message.tokens:
             self.total_tokens += message.tokens
         self.updated_at = datetime.now()
+
+    def _try_merge_tool_result(self, message: Message) -> bool:
+        """Try to find the assistant message that triggered this tool result and merge it."""
+        # Search backwards for the assistant message containing the tool call
+        for i in range(len(self.messages) - 1, -1, -1):
+            msg = self.messages[i]
+            if msg.role == 'assistant' and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if tc.get('id') == message.tool_call_id:
+                        tc['result'] = message.content
+                        self.updated_at = datetime.now()
+                        return True
+        return False
 
     def update_message(self, message_id: str, content: str = None, 
                        images: List[str] = None):
@@ -218,10 +238,20 @@ class Conversation:
                 self.updated_at = datetime.now()
                 break
 
-    def delete_message(self, message_id: str):
-        """Delete a message from the conversation"""
+    def delete_message(self, message_id: str) -> List[str]:
+        """Delete a message from the conversation.
+           Returns a list containing the deleted message ID.
+           Note: If we were storing tool results as separate messages, we would need to cascade delete them here.
+           But since we merge tool results into the assistant message, deleting the assistant message
+           implicitly deletes the results.
+        """
+        original_count = len(self.messages)
         self.messages = [m for m in self.messages if m.id != message_id]
-        self.updated_at = datetime.now()
+        
+        if len(self.messages) < original_count:
+            self.updated_at = datetime.now()
+            return [message_id]
+        return []
 
     def get_tokens_per_minute(self) -> float:
         """Calculate average tokens per minute for assistant responses"""

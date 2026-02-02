@@ -259,6 +259,22 @@ class ChatView(QWidget):
         self._schedule_nav_update()
     
     def add_message(self, message: Message):
+        # Try to update existing assistant message if this is a tool result
+        if message.role == 'tool' and message.tool_call_id:
+            # Search backwards for the matching assistant widget
+            for i in range(len(self._message_widgets) - 1, -1, -1):
+                widget = self._message_widgets[i]
+                if widget.message.role == 'assistant' and widget.has_tool_call(message.tool_call_id):
+                    # The message object in widget should already be updated by Conversation.add_message
+                    # because it's the same object reference. We just need to refresh the UI.
+                    widget.refresh_tool_calls()
+                    
+                    # Only auto-scroll if we updated the very last message
+                    if i == len(self._message_widgets) - 1:
+                        QTimer.singleShot(50, self._scroll_to_bottom)
+                    return
+
+        # Create widget
         widget = MessageWidget(message)
         widget.edit_requested.connect(self.edit_message.emit)
         widget.delete_requested.connect(self.delete_message.emit)

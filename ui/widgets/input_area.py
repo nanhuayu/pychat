@@ -287,6 +287,7 @@ class InputArea(QWidget):
     """Input area - single-row compact toolbar + input"""
     
     message_sent = pyqtSignal(str, list)
+    cancel_requested = pyqtSignal()
     conversation_settings_requested = pyqtSignal()
     provider_settings_requested = pyqtSignal()  # New: quick access to provider config
     show_thinking_changed = pyqtSignal(bool)
@@ -303,6 +304,7 @@ class InputArea(QWidget):
         self._mcp_enabled = False
         self._search_enabled = False
         self._work_dir = ""
+        self._is_streaming = False
         self._setup_ui()
 
     def set_work_dir(self, path: str):
@@ -422,13 +424,43 @@ class InputArea(QWidget):
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("send_btn")
         self.send_btn.setFixedHeight(28)
-        self.send_btn.clicked.connect(self._send_message)
+        self.send_btn.clicked.connect(self._on_send_btn_clicked)
         toolbar.addWidget(self.send_btn)
         
         wrapper_layout.addLayout(toolbar)
         layout.addWidget(input_wrapper)
 
     
+    def set_streaming_state(self, is_streaming: bool):
+        self._is_streaming = is_streaming
+        if is_streaming:
+            self.send_btn.setText("停止")
+            self.send_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #d73a49;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #cb2431;
+                }
+            """)
+            self.send_btn.setToolTip("停止生成")
+            self.text_input.setEnabled(False)
+        else:
+            self.send_btn.setText("发送")
+            self.send_btn.setStyleSheet("")
+            self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
+            self.text_input.setEnabled(True)
+            self.text_input.setFocus()
+
+    def _on_send_btn_clicked(self):
+        if self._is_streaming:
+            self.cancel_requested.emit()
+        else:
+            self._send_message()
+
     def set_providers(self, providers: list):
         self.provider_combo.blockSignals(True)
         self.provider_combo.clear()

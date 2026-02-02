@@ -138,6 +138,11 @@ class StreamManager(QObject):
                         break
                         
                     msg = loop.run_until_complete(chat_step())
+
+                    if state.cancel_event.is_set():
+                        # Discard partial result if cancelled
+                        msg = None
+                        break
                     
                     if not msg:
                         break # Error or empty?
@@ -203,9 +208,11 @@ class StreamManager(QObject):
                 loop.close()
                 if final_response:
                     self._raw_complete.emit(conversation_id, request_id, final_response)
+                elif state.cancel_event.is_set():
+                    self._raw_error.emit(conversation_id, request_id, "已取消生成")
                 else:
-                    # Cancelled or looped out
-                    pass
+                    # Cancelled or looped out without explicit cancel?
+                    self._raw_error.emit(conversation_id, request_id, "生成未能完成")
                     
             except Exception as e:
                 self._raw_error.emit(conversation_id, request_id, str(e))

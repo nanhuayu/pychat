@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         
         self.input_area = InputArea()
         self.input_area.message_sent.connect(self._send_message)
+        self.input_area.cancel_requested.connect(self._cancel_generation)
         self.input_area.conversation_settings_requested.connect(self._open_conversation_settings)
         self.input_area.provider_settings_requested.connect(self._open_provider_settings)
         self.input_area.show_thinking_changed.connect(self._on_conversation_show_thinking_changed)
@@ -237,9 +238,10 @@ class MainWindow(QMainWindow):
         """Enable/disable input for the currently selected conversation only."""
         try:
             if not self.current_conversation:
-                self.input_area.set_enabled(True)
+                self.input_area.set_streaming_state(False)
                 return
-            self.input_area.set_enabled(not self.stream_manager.is_streaming(self.current_conversation.id))
+            is_streaming = self.stream_manager.is_streaming(self.current_conversation.id)
+            self.input_area.set_streaming_state(is_streaming)
         except Exception:
             pass
     
@@ -597,7 +599,11 @@ class MainWindow(QMainWindow):
         """Handle response error - called from main thread."""
         self._sync_input_enabled()
 
-        error_message = Message(role="assistant", content=f"未知错误: {error}")
+        content = f"错误: {error}"
+        if error == "已取消生成":
+            content = "已取消生成"
+
+        error_message = Message(role="assistant", content=content)
 
         # Persist the error message to the originating conversation so it doesn't get lost.
         target = None

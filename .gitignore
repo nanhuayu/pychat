@@ -5,6 +5,7 @@
 *.tar.gz
 
 temp/
+temp_*
 debug/
 
 # Byte-compiled / optimized

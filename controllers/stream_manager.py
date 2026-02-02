@@ -29,6 +29,7 @@ from models.conversation import Conversation, Message
 from models.provider import Provider
 from models.streaming import ConversationStreamState
 from services.chat_service import ChatService
+from core.task.task import Task
 
 
 class StreamManager(QObject):
@@ -74,6 +75,7 @@ class StreamManager(QObject):
         enable_thinking: bool,
         enable_search: bool = False,
         enable_mcp: bool = False,
+        mode: str = "chat",
         debug_log_path: Optional[str] = None,
     ) -> Optional[ConversationStreamState]:
         """Start streaming for a conversation.
@@ -111,108 +113,140 @@ class StreamManager(QObject):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
-                # Maximum conversation turns to prevent infinite loops
-                max_turns = 10
-                turns = 0
+                # Use the mode passed to start()
+                # mode = getattr(conversation, "mode", None) 
                 
-                # Current working conversation context (evolves with tool calls)
-                current_conversation = conversation_snapshot
-                
-                final_response: Optional[Message] = None
-
-                async def chat_step() -> Message:
-                    return await chat_service.send_message(
-                        provider,
-                        current_conversation,
-                        on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
-                        on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
-                        enable_thinking=bool(enable_thinking),
+                if mode == "agent":
+                    task = Task(
+                        conversation=conversation_snapshot,
+                        provider=provider,
+                        chat_service=chat_service,
+                        mcp_manager=mcp_manager,
+                        max_loops=20,
                         enable_search=bool(enable_search),
-                        enable_mcp=bool(enable_mcp),
-                        debug_log_path=debug_log_path,
-                        cancel_event=state.cancel_event,
+                        enable_mcp=bool(enable_mcp)
                     )
-
-                while turns < max_turns:
-                    if state.cancel_event.is_set():
-                        break
-                        
-                    msg = loop.run_until_complete(chat_step())
-
-                    if state.cancel_event.is_set():
-                        # Discard partial result if cancelled
-                        msg = None
-                        break
                     
-                    if not msg:
-                        break # Error or empty?
+                    async def run_agent():
+                        cancel_task = asyncio.create_task(wait_for_cancel())
+                        try:
+                            await task.run(
+                                on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
+                                on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
+                                on_step=lambda m: self._raw_step.emit(conversation_id, request_id, m)
+                            )
+                        finally:
+                            cancel_task.cancel()
 
-                    # If this message has tool calls, it's an intermediate step
-                    if msg.tool_calls:
-                        # 1. Emit the Assistant's "Call Tool" message as a step
-                        self._raw_step.emit(conversation_id, request_id, msg)
-                        
-                        # 2. Append to current context
-                        current_conversation.messages.append(msg)
-                        
-                        # 3. Serialize executions
-                        for tc in msg.tool_calls:
-                            if state.cancel_event.is_set():
-                                break
-                                
-                            tool_name = tc.get("function", {}).get("name")
-                            tool_args_str = tc.get("function", {}).get("arguments", "{}")
-                            tool_call_id = tc.get("id")
-                            
-                            try:
-                                tool_args = json.loads(tool_args_str)
-                            except Exception:
-                                tool_args = {}
-                                
-                            # Notify UI/log? We can emit a token?
-                            # self._raw_token.emit(conversation_id, request_id, f"\n[Executing {tool_name}...]\n")
-                            
-                            # Execute
-                            work_dir = getattr(current_conversation, "work_dir", "")
-                            result_text = loop.run_until_complete(
-                                mcp_manager.call_tool(tool_name, tool_args, work_dir=work_dir)
-                            )
-                            
-                            # Create Tool Message
-                            tool_msg = Message(
-                                role="tool",
-                                content=str(result_text),
-                                tool_call_id=tool_call_id,
-                                metadata={"name": tool_name}
-                            )
-                            
-                            # Emit Tool Result as a step
-                            self._raw_step.emit(conversation_id, request_id, tool_msg)
-                            
-                            # Append to context
-                            current_conversation.messages.append(tool_msg)
-                            
-                        turns += 1
-                        # Reset visible text state allows new tokens to stream cleanly?
-                        # StreamManager state accumulation issues?
-                        # state.visible_text accumulates EVERYTHING?
-                        # Actually UI ChatView appends new bubble for each message.
-                        # We should reset state.visible_text for the NEXT turn.
-                        # But wait, raw tokens are just emitted.
-                        continue
+                    async def wait_for_cancel():
+                        while not state.cancel_event.is_set():
+                            await asyncio.sleep(0.1)
+                        task.cancel()
+
+                    loop.run_until_complete(run_agent())
+                    
+                    if task.status == "completed":
+                        # In Agent mode, the last message has already been emitted via on_step.
+                        # We emit None to signal completion without adding a duplicate message.
+                        self._raw_complete.emit(conversation_id, request_id, None)
+                    elif task.status == "cancelled":
+                        self._raw_error.emit(conversation_id, request_id, "任务已取消")
                     else:
-                        # Final answer
-                        final_response = msg
-                        break
+                        self._raw_error.emit(conversation_id, request_id, f"任务结束: {task.status}")
 
-                loop.close()
-                if final_response:
-                    self._raw_complete.emit(conversation_id, request_id, final_response)
-                elif state.cancel_event.is_set():
-                    self._raw_error.emit(conversation_id, request_id, "已取消生成")
                 else:
-                    # Cancelled or looped out without explicit cancel?
-                    self._raw_error.emit(conversation_id, request_id, "生成未能完成")
+                    # Chat Mode (Legacy Loop)
+                    max_turns = 10
+                    turns = 0
+                    current_conversation = conversation_snapshot
+                    final_response: Optional[Message] = None
+
+                    async def chat_step() -> Message:
+                        return await chat_service.send_message(
+                            provider,
+                            current_conversation,
+                            on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
+                            on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
+                            enable_thinking=bool(enable_thinking),
+                            enable_search=bool(enable_search),
+                            enable_mcp=bool(enable_mcp),
+                            debug_log_path=debug_log_path,
+                            cancel_event=state.cancel_event,
+                        )
+
+                    while turns < max_turns:
+                        if state.cancel_event.is_set():
+                            break
+                            
+                        msg = loop.run_until_complete(chat_step())
+
+                        if state.cancel_event.is_set():
+                            msg = None
+                            break
+                        
+                        if not msg:
+                            break 
+
+                        if msg.tool_calls:
+                            self._raw_step.emit(conversation_id, request_id, msg)
+                            current_conversation.messages.append(msg)
+                            
+                            for tc in msg.tool_calls:
+                                if state.cancel_event.is_set():
+                                    break
+                                    
+                                tool_name = tc.get("function", {}).get("name")
+                                tool_args_str = tc.get("function", {}).get("arguments", "{}")
+                                tool_call_id = tc.get("id")
+                                
+                                try:
+                                    tool_args = json.loads(tool_args_str)
+                                except Exception:
+                                    tool_args = {}
+                                
+                                work_dir = getattr(current_conversation, "work_dir", "")
+                                
+                                # Use ToolContext to enforce permissions
+                                from core.tools.base import ToolContext
+                                
+                                # TODO: Connect to UI for manual approval if needed
+                                async def ui_approval_callback(msg: str) -> bool:
+                                    # For Chat Mode, we currently auto-deny if not auto-approved by settings
+                                    # In future, emit signal to UI to ask user
+                                    return False
+                                
+                                context = ToolContext(
+                                    work_dir=work_dir or ".",
+                                    approval_callback=ui_approval_callback
+                                )
+                                
+                                result_text = loop.run_until_complete(
+                                    mcp_manager.execute_tool_with_context(tool_name, tool_args, context)
+                                )
+                                
+                                tool_msg = Message(
+                                    role="tool",
+                                    content=str(result_text),
+                                    tool_call_id=tool_call_id,
+                                    metadata={"name": tool_name}
+                                )
+                                
+                                self._raw_step.emit(conversation_id, request_id, tool_msg)
+                                current_conversation.messages.append(tool_msg)
+                                
+                            turns += 1
+                            continue
+                        else:
+                            final_response = msg
+                            break
+
+                    loop.close()
+                    if final_response:
+                        self._raw_complete.emit(conversation_id, request_id, final_response)
+                    elif state.cancel_event.is_set():
+                        self._raw_error.emit(conversation_id, request_id, "已取消生成")
+                    else:
+                        self._raw_error.emit(conversation_id, request_id, "生成未能完成")
                     
             except Exception as e:
                 self._raw_error.emit(conversation_id, request_id, str(e))

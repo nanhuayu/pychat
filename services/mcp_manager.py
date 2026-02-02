@@ -26,6 +26,16 @@ from models.mcp_server import McpServerConfig
 from services.storage_service import StorageService
 from services.search_service import SearchService
 
+from core.tools.base import BaseTool, ToolContext
+from core.tools.system.filesystem import LsTool, ReadFileTool, GrepTool
+from core.tools.system.python_exec import PythonExecTool
+from core.tools.system.file_ops import WriteToFileTool, EditFileTool, DeleteFileTool
+from core.tools.system.shell_exec import ExecuteCommandTool
+from core.tools.system.memory import MemoryTool
+from core.tools.system.planning import PlanTool
+from core.tools.system.skills import SkillTool
+from core.tools.system.patch import PatchTool
+from core.tools.system.todo import TodoListTool
 
 class McpManager:
     _instance = None
@@ -55,90 +65,55 @@ class McpManager:
 
         # Built-in "default MCP" tools (no external server required)
         self._workspace_root = Path(os.getcwd()).resolve()
+        
+        # Initialize System Tools
+        self._system_tools: Dict[str, BaseTool] = {}
+        self._register_system_tool(LsTool())
+        self._register_system_tool(ReadFileTool())
+        self._register_system_tool(GrepTool())
+        self._register_system_tool(PythonExecTool())
+        self._register_system_tool(WriteToFileTool())
+        self._register_system_tool(EditFileTool())
+        self._register_system_tool(DeleteFileTool())
+        self._register_system_tool(ExecuteCommandTool())
+        self._register_system_tool(MemoryTool())
+        self._register_system_tool(PlanTool())
+        self._register_system_tool(SkillTool())
+        self._register_system_tool(PatchTool())
+        self._register_system_tool(TodoListTool())
+        
+        # Permissions Configuration
+        self._permissions_config: Dict[str, Any] = {
+            "auto_approve_read": True,
+            "auto_approve_edit": False,
+            "auto_approve_command": False
+        }
+
+    def update_permissions(self, config: Dict[str, Any]):
+        """Update permission settings from app settings."""
+        self._permissions_config.update({
+            k: v for k, v in config.items() 
+            if k in self._permissions_config
+        })
+
+    def _register_system_tool(self, tool: BaseTool):
+        self._system_tools[tool.name] = tool
 
     def _resolve_path_in_workspace(self, p: str, work_dir: Optional[Path] = None) -> Path:
+        # Legacy helper, kept for backward compatibility if needed, 
+        # but tools now handle this via ToolContext.
         p = (p or ".").strip() or "."
         root = work_dir if work_dir else self._workspace_root
         candidate = (root / p).resolve() if not os.path.isabs(p) else Path(p).resolve()
         try:
             candidate.relative_to(root)
         except Exception:
-            # Allow reading files outside workspace if explicitly requested? 
-            # For security, strict workspace is better. But user might want to access anything.
-            # Let's keep it strict for now but relative to the dynamic root.
             raise ValueError(f"Path is outside workspace: {root}")
         return candidate
 
+
     def _builtin_tools(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "builtin_filesystem_ls",
-                    "description": "List files and directories under a workspace path.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative path. Default: '.'"},
-                            "recursive": {"type": "boolean", "description": "List recursively. Default: false"},
-                            "maxEntries": {"type": "number", "description": "Limit returned entries to avoid huge output. Default: 200"},
-                        },
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "builtin_filesystem_read",
-                    "description": "Read a text file under the workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative file path"},
-                            "maxBytes": {"type": "number", "description": "Max bytes to read (default: 20000)"},
-                        },
-                        "required": ["path"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "builtin_filesystem_grep",
-                    "description": "Search for a regex in text files under a workspace directory.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative directory. Default: '.'"},
-                            "pattern": {"type": "string", "description": "Regex pattern"},
-                            "include": {"type": "string", "description": "Optional glob include pattern, e.g. '**/*.py'"},
-                            "maxMatches": {"type": "number", "description": "Max matches (default: 50)"},
-                        },
-                        "required": ["pattern"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "builtin_python_exec",
-                    "description": "Execute Python code locally (no sandbox). Returns stdout/stderr. Use for quick calculations or small scripts.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "code": {"type": "string", "description": "Python code to execute"},
-                            "timeoutSec": {"type": "number", "description": "Timeout seconds (default: 10)"},
-                            "cwd": {"type": "string", "description": "Workspace-relative working directory (default: '.')"},
-                        },
-                        "required": ["code"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-        ]
+        return [tool.to_openai_tool() for tool in self._system_tools.values()]
 
     def load_servers(self):
         """Load servers from storage"""
@@ -256,6 +231,59 @@ class McpManager:
         self._tools_cache = tools_list
         return tools_list
 
+    async def execute_tool_with_context(self, tool_name: str, arguments: dict, context: ToolContext) -> str:
+        """Execute a tool using a provided context (preserves state)."""
+        
+        # Wrap approval callback with permission check
+        original_callback = context.approval_callback
+        
+        # Identify category
+        category = "misc"
+        if tool_name in self._system_tools:
+            category = self._system_tools[tool_name].category
+        
+        async def permission_aware_callback(message: str) -> bool:
+            # Check auto-approve policy
+            if category == "read" and self._permissions_config.get("auto_approve_read"):
+                return True
+            if category == "edit" and self._permissions_config.get("auto_approve_edit"):
+                return True
+            if category == "command" and self._permissions_config.get("auto_approve_command"):
+                return True
+                
+            # Fallback to original callback if provided
+            if original_callback:
+                if asyncio.iscoroutinefunction(original_callback):
+                    return await original_callback(message)
+                return original_callback(message)
+            
+            # Default: If no callback and not auto-approved, DENY for safety (except 'misc' or 'read'?)
+            # BaseTool defaults to True if no callback.
+            # But if we are here, we are enforcing policy.
+            # If the user explicitly disabled auto-approve, and there is no UI callback, we MUST deny.
+            return False
+
+        # Inject wrapped callback
+        # We need to monkey-patch the context instance or create a proxy?
+        # ToolContext has approval_callback attribute.
+        context.approval_callback = permission_aware_callback
+
+        # 1. System Tools
+        if tool_name in self._system_tools:
+            tool = self._system_tools[tool_name]
+            try:
+                result = await tool.execute(arguments, context)
+                return result.to_string()
+            except Exception as e:
+                return f"Tool execution error: {e}"
+
+        # 2. External MCP Tools (Stateless for now regarding 'context.state', but use context.work_dir)
+        # We delegate to the existing logic but we need to adapt.
+        # The existing logic is inside call_tool.
+        # Let's reuse call_tool logic but we can't easily inject state into stdio_client yet.
+        # So we just call call_tool. External tools don't share our memory dict anyway.
+        return await self.call_tool(tool_name, arguments, work_dir=context.work_dir)
+
     async def call_tool(self, tool_name: str, arguments: dict, work_dir: Optional[str] = None) -> Any:
         """Execute a tool. Handles both search and MCP tools."""
         
@@ -297,167 +325,25 @@ class McpManager:
 
             return await self.search_service.search(final_query)
 
-        # Built-in default MCP tools
-        if tool_name == "builtin_filesystem_ls":
+        # Built-in system tools (Modularized)
+        if tool_name in self._system_tools:
+            tool = self._system_tools[tool_name]
             if not isinstance(arguments, dict):
                 arguments = {}
-            path = arguments.get("path", ".")
-            recursive = bool(arguments.get("recursive", False))
-            max_entries = int(arguments.get("maxEntries", 200) or 200)
-            max_entries = max(1, min(max_entries, 2000))
-            try:
-                base = self._resolve_path_in_workspace(str(path), work_dir=effective_root)
-            except Exception as e:
-                return f"Invalid path: {e}"
-
-            if not base.exists():
-                return f"Not found: {base}"
-
-            entries: List[Dict[str, Any]] = []
-
-            def add_entry(p: Path):
-                try:
-                    rel = str(p.relative_to(effective_root)).replace("\\", "/")
-                except Exception:
-                    rel = str(p)
-                try:
-                    stat = p.stat()
-                    size = int(stat.st_size)
-                except Exception:
-                    size = None
-                entries.append({
-                    "path": rel,
-                    "name": p.name,
-                    "type": "dir" if p.is_dir() else "file",
-                    "size": size,
-                })
-
-            try:
-                if base.is_dir():
-                    if recursive:
-                        for p in base.rglob("*"):
-                            add_entry(p)
-                            if len(entries) >= max_entries:
-                                break
-                    else:
-                        for p in base.iterdir():
-                            add_entry(p)
-                            if len(entries) >= max_entries:
-                                break
-                else:
-                    add_entry(base)
-            except Exception as e:
-                return f"List error: {e}"
-
-            return json.dumps({"root": str(effective_root).replace("\\", "/"), "entries": entries}, ensure_ascii=False, indent=2)
-
-        if tool_name == "builtin_filesystem_read":
-            if not isinstance(arguments, dict):
-                arguments = {}
-            path = str(arguments.get("path", "") or "").strip()
-            max_bytes = int(arguments.get("maxBytes", 20000) or 20000)
-            max_bytes = max(100, min(max_bytes, 200000))
-            if not path:
-                return "Missing 'path'"
-
-            try:
-                file_path = self._resolve_path_in_workspace(path, work_dir=effective_root)
-            except Exception as e:
-                return f"Invalid path: {e}"
             
-            if not file_path.is_file():
-                return f"Not a file: {file_path}"
+            # Create context with approval callback placeholder
+            # TODO: Hook up UI callback for approval
+            context = ToolContext(
+                work_dir=str(effective_root),
+                approval_callback=None 
+            )
             
             try:
-                data = file_path.read_bytes()[:max_bytes]
-                try:
-                    text = data.decode("utf-8")
-                except Exception:
-                    text = data.decode("utf-8", errors="replace")
-                return text
+                result = await tool.execute(arguments, context)
+                return result.to_string()
             except Exception as e:
-                return f"Read error: {e}"
+                return f"Tool execution error: {e}"
 
-        if tool_name == "builtin_filesystem_grep":
-            import re
-            if not isinstance(arguments, dict):
-                arguments = {}
-            root = arguments.get("path", ".")
-            pattern = arguments.get("pattern", "")
-            include = arguments.get("include")
-            max_matches = int(arguments.get("maxMatches", 50) or 50)
-            max_matches = max(1, min(max_matches, 500))
-            if not isinstance(pattern, str) or not pattern:
-                return "Missing 'pattern'"
-            try:
-                root_path = self._resolve_path_in_workspace(str(root), work_dir=effective_root)
-            except Exception as e:
-                return f"Invalid path: {e}"
-            if not root_path.exists() or not root_path.is_dir():
-                return f"Not a directory: {root_path}"
-
-            try:
-                rx = re.compile(pattern)
-            except Exception as e:
-                return f"Invalid regex: {e}"
-
-            glob_pattern = include if isinstance(include, str) and include.strip() else "**/*"
-            matches: List[Dict[str, Any]] = []
-            for p in root_path.glob(glob_pattern):
-                if len(matches) >= max_matches:
-                    break
-                if not p.is_file():
-                    continue
-                try:
-                    content = p.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
-                    continue
-                for i, line in enumerate(content.splitlines(), 1):
-                    if rx.search(line):
-                        try:
-                            rel = str(p.relative_to(effective_root)).replace("\\", "/")
-                        except Exception:
-                            rel = str(p)
-                        matches.append({"path": rel, "line": i, "text": line[:300]})
-                        if len(matches) >= max_matches:
-                            break
-            return json.dumps({"matches": matches, "count": len(matches)}, ensure_ascii=False, indent=2)
-
-        if tool_name == "builtin_python_exec":
-            if not isinstance(arguments, dict):
-                arguments = {}
-            code = arguments.get("code", "")
-            timeout_sec = float(arguments.get("timeoutSec", 30) or 30)
-            cwd = arguments.get("cwd", ".")
-            if not isinstance(code, str) or not code.strip():
-                return "Missing 'code'"
-            timeout_sec = max(1.0, min(timeout_sec, 60.0))
-            try:
-                cwd_path = self._resolve_path_in_workspace(str(cwd), work_dir=effective_root)
-            except Exception as e:
-                return f"Invalid cwd: {e}"
-
-            try:
-                proc = subprocess.run(
-                    [sys.executable, "-c", code],
-                    cwd=str(cwd_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_sec,
-                )
-                return json.dumps(
-                    {
-                        "exitCode": proc.returncode,
-                        "stdout": (proc.stdout or "").strip(),
-                        "stderr": (proc.stderr or "").strip(),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            except subprocess.TimeoutExpired:
-                return f"Python execution timed out after {timeout_sec:.0f}s"
-            except Exception as e:
-                return f"Python execution error: {e}"
         
         # Handle external MCP tools
         if not MCP_AVAILABLE:

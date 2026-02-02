@@ -374,6 +374,14 @@ class InputArea(QWidget):
         self.model_combo.setMaximumWidth(200)
         self.model_combo.setEditable(True)
         toolbar.addWidget(self.model_combo)
+
+        # Mode selector
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("mode_combo")
+        self.mode_combo.addItems(["Chat", "Agent"])
+        self.mode_combo.setToolTip("选择对话模式")
+        self.mode_combo.setMinimumWidth(70)
+        toolbar.addWidget(self.mode_combo)
         
         # Thinking toggle
         self.thinking_toggle = QToolButton()
@@ -493,6 +501,9 @@ class InputArea(QWidget):
     
     def get_selected_model(self) -> str:
         return self.model_combo.currentText()
+
+    def get_selected_mode(self) -> str:
+        return self.mode_combo.currentText()
 
     def set_show_thinking(self, enabled: bool):
         self._suppress_thinking_signal = True

@@ -18,7 +18,9 @@ from models.provider import Provider
 from services.storage_service import StorageService
 from services.chat_service import ChatService
 from services.provider_service import ProviderService
+from services.mcp_manager import McpManager
 from controllers.stream_manager import StreamManager
+from core.task.task import Task
 
 from .widgets.sidebar import Sidebar
 from .widgets.chat_view import ChatView
@@ -38,6 +40,7 @@ class MainWindow(QMainWindow):
         self.storage = StorageService()
         self.chat_service = ChatService()
         self.provider_service = ProviderService()
+        self.mcp_manager = McpManager()
         self.stream_manager = StreamManager(self.chat_service, parent=self)
         
         self.providers: list[Provider] = []
@@ -186,6 +189,7 @@ class MainWindow(QMainWindow):
     
     def _load_data(self):
         self._app_settings = self.storage.load_settings() or {}
+        self.mcp_manager.update_permissions(self._app_settings)
         self._apply_proxy()
 
         self.providers = self.storage.load_providers()
@@ -468,6 +472,7 @@ class MainWindow(QMainWindow):
         # Get tool toggles from input area
         enable_search = self.input_area.is_search_enabled()
         enable_mcp = self.input_area.is_mcp_enabled()
+        mode = self.input_area.get_selected_mode().lower()
 
         state = self.stream_manager.start(
             provider,
@@ -475,6 +480,7 @@ class MainWindow(QMainWindow):
             enable_thinking=enable_thinking,
             enable_search=enable_search,
             enable_mcp=enable_mcp,
+            mode=mode,
             debug_log_path=debug_log_path,
         )
         if not state:
@@ -731,7 +737,11 @@ class MainWindow(QMainWindow):
             self._app_settings['show_thinking'] = dialog.get_show_thinking()
             self._app_settings['log_stream'] = dialog.get_log_stream()
             self._app_settings['proxy_url'] = dialog.get_proxy_url()
+            self._app_settings.update(dialog.get_auto_approve_settings())
             self._apply_proxy()
+            
+            # Apply updated permissions to McpManager immediately
+            self.mcp_manager.update_permissions(self._app_settings)
 
             self.storage.save_settings(self._app_settings)
             self.stats_panel.setVisible(self._app_settings['show_stats'])

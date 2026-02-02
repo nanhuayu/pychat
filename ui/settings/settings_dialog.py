@@ -124,14 +124,26 @@ class SettingsDialog(QDialog):
     def _init_pages(self):
         # Page 0: Models
         self.content.addWidget(self._create_models_page())
-        # Page 1: MCP
+        # Page 1: Agent & Permissions
+        self.content.addWidget(self._create_agent_page())
+        # Page 2: MCP
         self.content.addWidget(self._create_mcp_page())
-        # Page 2: Search
+        # Page 3: Search
         self.content.addWidget(self._create_search_page())
-        # Page 3: Appearance
+        # Page 4: Appearance
         self.content.addWidget(self._create_appearance_page())
-        # Page 4: General
+        # Page 5: General
         self.content.addWidget(self._create_general_page())
+
+        # Setup sidebar
+        self.page_list.clear()
+        items = ["模型服务商", "Agent & 权限", "MCP 服务器", "网络搜索", "外观设置", "常规设置"]
+        for i, label in enumerate(items):
+            item = QListWidgetItem(label)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.page_list.addItem(item)
+        
+        self.page_list.setCurrentRow(0)
 
     def _change_page(self, index):
         self.content.setCurrentIndex(index)
@@ -244,6 +256,52 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "成功", f"已添加 {added} 个默认服务商")
         else:
             QMessageBox.information(self, "提示", "所有默认服务商已存在")
+
+    # ============ Page 1: Agent & Permissions ============
+    def _create_agent_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        # Header
+        layout.addWidget(QLabel("<h2>Agent 与 权限设置</h2>"))
+
+        # Permissions Group
+        perm_group = QGroupBox("自动授权设置")
+        perm_layout = QVBoxLayout(perm_group)
+        
+        self.auto_read_check = QCheckBox("自动允许读取文件 (read_file, ls, grep)")
+        self.auto_read_check.setToolTip("启用后，读取文件的操作将不再询问确认")
+        self.auto_read_check.setChecked(bool(self.current_settings.get('auto_approve_read', True)))
+        perm_layout.addWidget(self.auto_read_check)
+        
+        self.auto_edit_check = QCheckBox("自动允许编辑文件 (write, edit, delete)")
+        self.auto_edit_check.setToolTip("启用后，修改文件的操作将不再询问确认 (请谨慎开启)")
+        self.auto_edit_check.setChecked(bool(self.current_settings.get('auto_approve_edit', False)))
+        perm_layout.addWidget(self.auto_edit_check)
+        
+        self.auto_cmd_check = QCheckBox("自动允许执行命令 (shell_exec)")
+        self.auto_cmd_check.setToolTip("启用后，执行 Shell 命令将不再询问确认 (极度危险!)")
+        self.auto_cmd_check.setChecked(bool(self.current_settings.get('auto_approve_command', False)))
+        perm_layout.addWidget(self.auto_cmd_check)
+        
+        layout.addWidget(perm_group)
+
+        # Migration/Modification Mode Hint
+        hint_group = QGroupBox("迁移与重构模式")
+        hint_layout = QVBoxLayout(hint_group)
+        hint_label = QLabel(
+            "如果您正在进行大规模代码迁移或重构，建议开启 '自动允许编辑文件'。\n"
+            "Agent 模式下，系统会尝试自动执行任务循环。"
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setProperty("muted", True)
+        hint_layout.addWidget(hint_label)
+        layout.addWidget(hint_group)
+
+        layout.addStretch()
+        return page
 
     # ============ Page 1: MCP ============
     def _create_mcp_page(self):
@@ -413,6 +471,13 @@ class SettingsDialog(QDialog):
     
     def get_proxy_url(self) -> str:
         return self.proxy_edit.text().strip()
+
+    def get_auto_approve_settings(self) -> dict:
+        return {
+            'auto_approve_read': self.auto_read_check.isChecked(),
+            'auto_approve_edit': self.auto_edit_check.isChecked(),
+            'auto_approve_command': self.auto_cmd_check.isChecked()
+        }
 
     def accept(self):
         """Save all settings before closing"""

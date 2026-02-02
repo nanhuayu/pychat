@@ -9,6 +9,7 @@ Consolidates:
 from __future__ import annotations
 
 import json
+import codecs
 from typing import Any, AsyncIterator, Optional, TextIO
 
 import httpx
@@ -73,6 +74,7 @@ async def iter_sse_data_lines(
     """Iterate `data: ...` lines from an OpenAI-compatible SSE stream."""
 
     buffer = ""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors='replace')
 
     async for chunk in response.aiter_bytes():
         try:
@@ -82,7 +84,8 @@ async def iter_sse_data_lines(
             return
 
         try:
-            buffer += chunk.decode("utf-8", errors="ignore")
+            text_chunk = decoder.decode(chunk, final=False)
+            buffer += text_chunk
         except Exception:
             continue
 

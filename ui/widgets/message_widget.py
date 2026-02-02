@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QSizePolicy, QToolButton, QTextBrowser, QAbstractScrollArea
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QSize
 from PyQt6.QtGui import QTextOption, QGuiApplication, QCursor
 
 try:
@@ -135,6 +135,7 @@ class MarkdownView(QTextBrowser):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
 
         doc = self.document()
@@ -143,14 +144,9 @@ class MarkdownView(QTextBrowser):
         doc.setDefaultTextOption(opt)
         doc.setDocumentMargin(0)
         
-        # Debounce resize events
-        self._resize_timer = QTimer(self)
-        self._resize_timer.setSingleShot(True)
-        self._resize_timer.setInterval(0)
-        self._resize_timer.timeout.connect(self._update_height)
-
+        # Monitor document size changes
         try:
-            doc.documentLayout().documentSizeChanged.connect(self._schedule_update_height)
+            doc.documentLayout().documentSizeChanged.connect(self._on_document_size_changed)
         except Exception:
             pass
 
@@ -173,28 +169,31 @@ class MarkdownView(QTextBrowser):
                 self.document().setMarkdown(text)
             except Exception:
                 self.setPlainText(text)
-                
-        self._schedule_update_height()
+        
+        # Force update geometry
+        self.updateGeometry()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._schedule_update_height()
+        # Recalculate height on width change
+        self.updateGeometry()
 
-    def _schedule_update_height(self, *_args) -> None:
-        self._resize_timer.start()
+    def _on_document_size_changed(self, *_args):
+        self.updateGeometry()
 
-    def _update_height(self) -> None:
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
         try:
-            w = max(1, self.viewport().width())
-            self.document().setTextWidth(w)
+            # Calculate height based on content
+            self.document().setTextWidth(self.viewport().width())
             size = self.document().documentLayout().documentSize()
             h = int(math.ceil(size.height()))
+            # Add small padding
+            return QSize(self.viewport().width(), max(18, h + 12))
         except Exception:
-            h = 0
-
-        target = max(18, h + 12)
-        if self.height() != target:
-            self.setFixedHeight(target)
+            return QSize(100, 30)
 
 
 class ThinkingSection(QWidget):

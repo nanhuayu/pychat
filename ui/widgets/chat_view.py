@@ -36,6 +36,14 @@ class ChatView(QWidget):
         self._streaming_container = None
         self._streaming_text: str = ""
         self._streaming_thinking_text: str = ""
+        
+        # Buffer for streaming updates to prevent UI freezing
+        self._pending_stream_text: str = ""
+        self._displayed_stream_text: str = ""
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(1000)  # Update UI every 100ms
+        self._render_timer.timeout.connect(self._process_stream_buffer)
+        
         self._setup_ui()
     
     def _setup_ui(self):
@@ -336,15 +344,30 @@ class ChatView(QWidget):
 
         self._streaming_text = ""
         self._streaming_thinking_text = ""
+        self._pending_stream_text = ""
+        self._displayed_stream_text = ""
         
         self._streaming_container = container
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, container)
         QTimer.singleShot(50, self._scroll_to_bottom)
+        
+        # Start buffered rendering
+        self._render_timer.start()
     
     def append_streaming_content(self, content: str):
         if self._streaming_label and content is not None:
             self._streaming_text += str(content)
-            self._streaming_label.set_markdown(self._streaming_text or "正在生成...")
+            self._pending_stream_text = self._streaming_text
+            # We don't update UI here directly, let timer handle it
+            
+    def _process_stream_buffer(self):
+        """Update UI from buffer if content changed"""
+        if not self._streaming_label:
+            return
+            
+        if self._pending_stream_text != self._displayed_stream_text:
+            self._displayed_stream_text = self._pending_stream_text
+            self._streaming_label.set_markdown(self._displayed_stream_text or "正在生成...")
             QTimer.singleShot(10, self._scroll_to_bottom)
 
     def append_streaming_thinking(self, thinking: str):
@@ -398,6 +421,12 @@ class ChatView(QWidget):
         self._streaming_thinking_btn.setText("收起思考" if self._streaming_thinking_expanded else "思考")
     
     def finish_streaming_response(self, message: Message):
+        self._render_timer.stop()
+        
+        # Ensure final state is rendered
+        if self._streaming_label and self._pending_stream_text != self._displayed_stream_text:
+             self._streaming_label.set_markdown(self._pending_stream_text)
+             
         if self._streaming_container:
             self._streaming_container.deleteLater()
             self._streaming_container = None
@@ -407,9 +436,15 @@ class ChatView(QWidget):
         self._streaming_thinking_expanded = False
         self._streaming_text = ""
         self._streaming_thinking_text = ""
+        self._pending_stream_text = ""
+        self._displayed_stream_text = ""
         self.add_message(message)
         self._schedule_nav_update()
     
+    def is_streaming(self) -> bool:
+        """Check if currently in streaming mode."""
+        return self._streaming_label is not None
+
     def update_message(self, message: Message):
         for i, widget in enumerate(self._message_widgets):
             if widget.message.id == message.id:

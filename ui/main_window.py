@@ -489,11 +489,23 @@ class MainWindow(QMainWindow):
     def _on_token_received(self, conversation_id: str, request_id: str, token: str):
         """Handle token received during streaming - called from main thread."""
         if self.current_conversation and self.current_conversation.id == conversation_id:
+            # Ensure UI is in streaming mode (e.g. for multi-turn tool use)
+            if not self.chat_view.is_streaming():
+                state = self.stream_manager.get_state(conversation_id)
+                model = state.model if state else ""
+                self.chat_view.start_streaming_response(model)
+
             self.chat_view.append_streaming_content(token)
 
     def _on_thinking_received(self, conversation_id: str, request_id: str, thinking: str):
         """Handle thinking received during streaming - called from main thread."""
         if self.current_conversation and self.current_conversation.id == conversation_id:
+            # Ensure UI is in streaming mode
+            if not self.chat_view.is_streaming():
+                state = self.stream_manager.get_state(conversation_id)
+                model = state.model if state else ""
+                self.chat_view.start_streaming_response(model)
+
             if bool((self.current_conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True))):
                 self.chat_view.append_streaming_thinking(thinking)
 

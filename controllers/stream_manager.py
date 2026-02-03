@@ -28,8 +28,8 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from models.conversation import Conversation, Message
 from models.provider import Provider
 from models.streaming import ConversationStreamState
-from services.chat_service import ChatService
-from core.task.task import Task
+from core.llm.client import LLMClient
+from core.agent.runner import AgentRunner
 
 
 class StreamManager(QObject):
@@ -50,9 +50,9 @@ class StreamManager(QObject):
     _raw_complete = pyqtSignal(str, str, object)
     _raw_error = pyqtSignal(str, str, str)
 
-    def __init__(self, chat_service: ChatService, parent: Optional[QObject] = None):
+    def __init__(self, client: LLMClient, parent: Optional[QObject] = None):
         super().__init__(parent)
-        self._chat_service = chat_service
+        self._client = client
         self._streams: dict[str, ConversationStreamState] = {}
 
         self._raw_token.connect(self._on_raw_token)
@@ -105,8 +105,8 @@ class StreamManager(QObject):
         except Exception:
             conversation_snapshot = conversation
 
-        chat_service = self._chat_service
-        mcp_manager = chat_service.mcp_manager
+        client = self._client
+        mcp_manager = client.mcp_manager
 
         def run_async() -> None:
             try:
@@ -117,42 +117,69 @@ class StreamManager(QObject):
                 # mode = getattr(conversation, "mode", None) 
                 
                 if mode == "agent":
-                    task = Task(
-                        conversation=conversation_snapshot,
-                        provider=provider,
-                        chat_service=chat_service,
-                        mcp_manager=mcp_manager,
-                        max_loops=20,
-                        enable_search=bool(enable_search),
-                        enable_mcp=bool(enable_mcp)
+                    runner = AgentRunner(
+                        client=client,
+                        mcp_manager=mcp_manager
                     )
                     
                     async def run_agent():
                         cancel_task = asyncio.create_task(wait_for_cancel())
                         try:
-                            await task.run(
+                            task = await runner.run_task(
+                                provider=provider,
+                                conversation=conversation_snapshot,
+                                task_description=f"Task for conversation {conversation_id}",
+                                max_turns=20,
                                 on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
                                 on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
-                                on_step=lambda m: self._raw_step.emit(conversation_id, request_id, m)
+                                on_step=lambda m: self._raw_step.emit(conversation_id, request_id, m),
+                                on_update=lambda msg: self._raw_token.emit(conversation_id, request_id, f"\n[System] {msg}\n"),
+                                cancel_event=state.cancel_event
                             )
+                            return task
                         finally:
                             cancel_task.cancel()
 
                     async def wait_for_cancel():
                         while not state.cancel_event.is_set():
                             await asyncio.sleep(0.1)
-                        task.cancel()
+                        # The runner checks cancel_event internally, so we don't need to explicitly call cancel() on runner.
+                        # But we need to ensure run_task exits.
+                        pass
 
-                    loop.run_until_complete(run_agent())
+                    task_result = loop.run_until_complete(run_agent())
                     
-                    if task.status == "completed":
-                        # In Agent mode, the last message has already been emitted via on_step.
-                        # We emit None to signal completion without adding a duplicate message.
-                        self._raw_complete.emit(conversation_id, request_id, None)
-                    elif task.status == "cancelled":
+                    if task_result.status == "completed":
+                        # In Agent mode, request a final summary from the agent
+                        # This serves as the "session compression" or "summary"
+                        try:
+                            summary_instruction = Message(
+                                role="user", 
+                                content="任务已完成。请生成一份简明扼要的会话总结（Session Summary），概述已完成的工作和当前状态。"
+                            )
+                            conversation_snapshot.messages.append(summary_instruction)
+                            
+                            async def fetch_summary():
+                                return await client.send_message(
+                                    provider,
+                                    conversation_snapshot,
+                                    on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
+                                    on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
+                                    enable_search=False,
+                                    enable_mcp=False # No tools for summary
+                                )
+                            
+                            summary_msg = loop.run_until_complete(fetch_summary())
+                            self._raw_complete.emit(conversation_id, request_id, summary_msg)
+                            
+                        except Exception as e:
+                            # If summary fails, just emit None
+                             self._raw_complete.emit(conversation_id, request_id, None)
+
+                    elif task_result.status == "cancelled":
                         self._raw_error.emit(conversation_id, request_id, "任务已取消")
                     else:
-                        self._raw_error.emit(conversation_id, request_id, f"任务结束: {task.status}")
+                        self._raw_error.emit(conversation_id, request_id, f"任务结束: {task_result.status}")
 
                 else:
                     # Chat Mode (Legacy Loop)
@@ -162,7 +189,7 @@ class StreamManager(QObject):
                     final_response: Optional[Message] = None
 
                     async def chat_step() -> Message:
-                        return await chat_service.send_message(
+                        return await client.send_message(
                             provider,
                             current_conversation,
                             on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),

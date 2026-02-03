@@ -420,7 +420,7 @@ class ChatView(QWidget):
         self._streaming_thinking_label.setVisible(self._streaming_thinking_expanded)
         self._streaming_thinking_btn.setText("收起思考" if self._streaming_thinking_expanded else "思考")
     
-    def finish_streaming_response(self, message: Message):
+    def finish_streaming_response(self, message: Message, add_to_view: bool = True):
         self._render_timer.stop()
         
         # Ensure final state is rendered
@@ -438,7 +438,10 @@ class ChatView(QWidget):
         self._streaming_thinking_text = ""
         self._pending_stream_text = ""
         self._displayed_stream_text = ""
-        self.add_message(message)
+        
+        # Only add message to view if requested (to avoid duplicates)
+        if add_to_view:
+            self.add_message(message)
         self._schedule_nav_update()
     
     def is_streaming(self) -> bool:

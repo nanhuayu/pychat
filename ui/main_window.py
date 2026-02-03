@@ -16,11 +16,10 @@ from typing import Optional
 from models.conversation import Conversation, Message
 from models.provider import Provider
 from services.storage_service import StorageService
-from services.chat_service import ChatService
+from core.llm.client import LLMClient
 from services.provider_service import ProviderService
-from services.mcp_manager import McpManager
+from core.tools.manager import McpManager
 from controllers.stream_manager import StreamManager
-from core.task.task import Task
 
 from .widgets.sidebar import Sidebar
 from .widgets.chat_view import ChatView
@@ -38,10 +37,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self.storage = StorageService()
-        self.chat_service = ChatService()
+        self.client = LLMClient()
         self.provider_service = ProviderService()
         self.mcp_manager = McpManager()
-        self.stream_manager = StreamManager(self.chat_service, parent=self)
+        self.stream_manager = StreamManager(self.client, parent=self)
         
         self.providers: list[Provider] = []
         self.current_conversation: Optional[Conversation] = None
@@ -563,13 +562,40 @@ class MainWindow(QMainWindow):
             
             if self.current_conversation and self.current_conversation.id == conversation_id:
                 if message.role == "assistant":
-                    self.chat_view.finish_streaming_response(message)
+                    # For assistant step messages (with tool_calls), finish streaming and add to view
+                    self.chat_view.finish_streaming_response(message, add_to_view=True)
+                    # Re-start streaming for next turn (expecting tool results then more generation)
+                    state = self.stream_manager.get_state(conversation_id)
+                    if state:
+                        self.chat_view.start_streaming_response(model=state.model)
                 else:
+                    # Tool result message: just add to view
                     self.chat_view.add_message(message)
 
     def _on_response_complete(self, conversation_id: str, request_id: str, response):
         """Handle response completion - called from main thread."""
         self._sync_input_enabled()
+
+        # Handle None response (Agent mode completion signal - no message to add)
+        if response is None:
+            # Just clean up streaming UI without adding message
+            if self.current_conversation and self.current_conversation.id == conversation_id:
+                self.chat_view.finish_streaming_response(Message(role="system", content=""), add_to_view=False)
+                self.stats_panel.update_stats(self.current_conversation)
+                
+                provider_name = ""
+                if self.current_conversation.provider_id:
+                    for p in self.providers:
+                        if p.id == self.current_conversation.provider_id:
+                            provider_name = p.name
+                            break
+                self.chat_view.update_header(
+                    provider_name=provider_name,
+                    model=self.current_conversation.model or "",
+                    msg_count=len(self.current_conversation.messages)
+                )
+            self._sync_input_enabled()
+            return
 
         if not isinstance(response, Message):
             return
@@ -584,7 +610,11 @@ class MainWindow(QMainWindow):
         if not target:
             return
 
-        target.add_message(response)
+        # Check if message was already added (e.g., by _on_response_step in Agent mode)
+        message_already_exists = any(m.id == response.id for m in target.messages)
+        
+        if not message_already_exists:
+            target.add_message(response)
         self.storage.save_conversation(target)
 
         # Refresh sidebar metadata list
@@ -596,7 +626,8 @@ class MainWindow(QMainWindow):
 
         # Only update the visible chat view if the user is still viewing that conversation.
         if self.current_conversation and self.current_conversation.id == conversation_id:
-            self.chat_view.finish_streaming_response(response)
+            # Only add to view if not already present
+            self.chat_view.finish_streaming_response(response, add_to_view=not message_already_exists)
             self.stats_panel.update_stats(self.current_conversation)
 
             provider_name = ""

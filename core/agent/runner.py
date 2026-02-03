@@ -4,24 +4,35 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, List
+from typing import Optional, Callable, Dict, Any, List, Union
 
 from models.conversation import Conversation, Message
 from models.provider import Provider
-from services.chat_service import ChatService
-from services.mcp_manager import McpManager
+from core.llm.client import LLMClient
+from core.tools.manager import McpManager
 from core.agent.task import AgentTask
 from core.tools.base import ToolContext
+from core.condense.condenser import ContextCondenser
+from core.llm.token_utils import estimate_conversation_tokens
 
 class AgentRunner:
-    """Executes the Agent Think-Act Loop."""
+    """
+    Executes the Agent Think-Act Loop.
+    Unifies Chat Mode and Agent Mode execution.
+    Handles per-message condensation and context management.
+    """
     
-    def __init__(self, chat_service: ChatService, mcp_manager: McpManager, persistence_dir: str = "tasks"):
-        self.chat_service = chat_service
+    def __init__(self, 
+                 client: LLMClient, 
+                 mcp_manager: McpManager, 
+                 persistence_dir: str = "tasks",
+                 context_window_limit: int = 100000):
+        self.client = client
         self.mcp_manager = mcp_manager
-        self.max_turns = 20
         self.persistence_dir = Path(persistence_dir)
         self.persistence_dir.mkdir(parents=True, exist_ok=True)
+        self.context_window_limit = context_window_limit
+        self.condenser = ContextCondenser(client)
 
     def _save_task(self, task: AgentTask):
         try:
@@ -31,29 +42,82 @@ class AgentRunner:
         except Exception as e:
             print(f"Failed to save task: {e}")
 
-    def _prune_history(self, history: List[Dict[str, Any]], max_tokens: int = 100000) -> List[Dict[str, Any]]:
-        # Simple heuristic: Keep last N messages. 
-        # Roo Code does sliding window token counting. 
-        # For now, let's keep last 50 entries to avoid context overflow in simple cases.
-        # Ideally, we should count tokens.
-        if len(history) > 50:
-            return history[-50:]
-        return history
+    async def _manage_context(self, conversation: Conversation, provider: Provider):
+        """
+        Check token count and condense conversation if needed.
+        Also triggers per-message condensation for recent heavy messages.
+        """
+        # 1. Per-message condensation (More aggressive now)
+        # We look at recent messages to condense tool outputs and long assistant responses
+        
+        messages = conversation.messages
+        # Only check last 20 messages to save time, but exclude the very last one (current)
+        start_idx = max(0, len(messages) - 20)
+        end_idx = max(0, len(messages) - 1) 
+        
+        for i in range(end_idx - 1, start_idx - 1, -1):
+            msg = messages[i]
+            if msg.summary:
+                continue
+                
+            should_condense = False
+            
+            # Condense Tool Results (often verbose)
+            if msg.role == "tool":
+                # Always condense tool results unless very short
+                if msg.content and len(msg.content) > 200:
+                    should_condense = True
+            
+            # Condense Assistant Responses if long
+            elif msg.role == "assistant":
+                if msg.content and len(msg.content) > 800:
+                    should_condense = True
+            
+            if should_condense:
+                # Async condensation
+                await self.condenser.condense_message(msg, provider)
+
+        # 2. Global condensation (Context Window)
+        current_tokens = estimate_conversation_tokens(conversation)
+        
+        # User requirement: Keep default ~10 messages. 
+        # We also check token limit as a safety net.
+        # But primarily we trigger if message count is high.
+        
+        message_count_threshold = 15 # Allow some buffer over 10
+        active_messages_count = len([m for m in conversation.messages if not m.condense_parent and not m.truncation_parent])
+        
+        threshold = self.context_window_limit * 0.7 
+        
+        if active_messages_count > message_count_threshold or current_tokens > threshold:
+            print(f"[AgentRunner] Triggering condensation. Active msgs: {active_messages_count}, Tokens: {current_tokens}")
+            # Keep last 10 messages as requested
+            await self.condenser.condense(conversation, provider, keep_last_n=10)
 
     async def run_task(
         self,
         provider: Provider,
         conversation: Conversation,
         task_description: str,
+        max_turns: int = 20,
         on_update: Optional[Callable[[str], None]] = None,
+        on_token: Optional[Callable[[str], None]] = None,
+        on_thinking: Optional[Callable[[str], None]] = None,
+        on_step: Optional[Callable[[Message], None]] = None,
         approval_callback: Optional[Callable[[str], bool]] = None,
-        resume_task_id: Optional[str] = None
+        resume_task_id: Optional[str] = None,
+        cancel_event: Optional[asyncio.Event] = None
     ) -> AgentTask:
         """
         Run a task loop.
+        
+        Args:
+            on_token: Callback for streaming tokens.
+            on_thinking: Callback for streaming thinking content.
+            on_step: Callback when a message (assistant response or tool result) is added.
         """
+        # 1. Initialize or Load Task
         if resume_task_id:
-            # Try to load existing task
             try:
                 file_path = self.persistence_dir / f"task_{resume_task_id}.json"
                 if file_path.exists():
@@ -73,36 +137,42 @@ class AgentRunner:
             )
         
         self._save_task(task)
-
         turn_count = 0
+        consecutive_mistake_count = 0
         
-        while turn_count < self.max_turns and task.status == "running":
+        while turn_count < max_turns and task.status == "running":
+            if cancel_event and cancel_event.is_set():
+                task.status = "cancelled"
+                break
+
             turn_count += 1
             if on_update:
                 on_update(f"--- Turn {turn_count} ---")
 
-            # 1. Call LLM
-            # Prune conversation messages if too long?
-            # ChatService builds messages from 'conversation'. We should ensure conversation syncs with task history.
-            # But task.history is raw dicts. Conversation.messages is Message objects.
-            # We assume conversation is kept up to date by this loop.
-            
-            # TODO: Implement context window management on 'conversation' object here if needed.
-            # For now, rely on ChatService not crashing.
+            # 2. Manage Context (Condensation)
+            await self._manage_context(conversation, provider)
 
+            # 3. Call LLM
             try:
-                response_msg = await self.chat_service.send_message(
+                response_msg = await self.client.send_message(
                     provider=provider,
                     conversation=conversation,
                     enable_thinking=True,
                     enable_search=True,
                     enable_mcp=True,
-                    on_token=None 
+                    on_token=on_token,
+                    on_thinking=on_thinking,
+                    cancel_event=cancel_event
                 )
             except Exception as e:
                 if on_update: on_update(f"LLM Error: {e}")
+                task.status = "failed"
                 break
             
+            # Notify step (assistant response)
+            if on_step:
+                on_step(response_msg)
+
             # Append Assistant Response
             conversation.messages.append(response_msg)
             task.add_history({"role": "assistant", "content": response_msg.content, "tool_calls": response_msg.tool_calls})
@@ -116,9 +186,13 @@ class AgentRunner:
                 self._save_task(task)
                 break
 
-            # 2. Execute Tools
+            # 4. Execute Tools
             tool_outputs = []
             for tool_call in response_msg.tool_calls:
+                if cancel_event and cancel_event.is_set():
+                    task.status = "cancelled"
+                    break
+
                 func_name = tool_call.get("function", {}).get("name")
                 args_str = tool_call.get("function", {}).get("arguments", "{}")
                 call_id = tool_call.get("id")
@@ -132,17 +206,25 @@ class AgentRunner:
                     args = {}
 
                 # Context with shared state
+                # Use conversation's work_dir if available, otherwise default to manager's root
+                work_dir = getattr(conversation, "work_dir", None) or self.mcp_manager._workspace_root
+                
                 context = ToolContext(
-                    work_dir=self.mcp_manager._workspace_root,
+                    work_dir=work_dir,
                     approval_callback=approval_callback,
                     state=task.state
                 )
                 
-                result_str = await self.mcp_manager.execute_tool_with_context(
-                    tool_name=func_name,
-                    arguments=args,
-                    context=context
-                )
+                try:
+                    result_str = await self.mcp_manager.execute_tool_with_context(
+                        tool_name=func_name,
+                        arguments=args,
+                        context=context
+                    )
+                    consecutive_mistake_count = 0 # Reset on success
+                except Exception as e:
+                    result_str = f"Error executing tool {func_name}: {str(e)}"
+                    consecutive_mistake_count += 1
                 
                 tool_outputs.append({
                     "tool_call_id": call_id,
@@ -153,15 +235,27 @@ class AgentRunner:
                 
                 if on_update:
                     on_update(f"Tool Result: {result_str[:200]}...")
+            
+            # Check for too many errors
+            if consecutive_mistake_count >= 3:
+                if on_update: on_update("Too many consecutive errors. Stopping task.")
+                task.status = "failed"
+                self._save_task(task)
+                break
 
-            # 3. Append Tool Outputs
+            # 5. Append Tool Outputs
             for output in tool_outputs:
-                conversation.messages.append(Message(
+                msg = Message(
                     role="tool",
                     content=output["content"],
                     tool_call_id=output["tool_call_id"],
-                    name=output["name"]
-                ))
+                )
+                msg.name = output["name"]
+                
+                if on_step:
+                    on_step(msg)
+
+                conversation.messages.append(msg)
                 task.add_history(output)
             
             self._save_task(task)

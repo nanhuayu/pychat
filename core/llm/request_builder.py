@@ -1,19 +1,55 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from models.conversation import Conversation, Message
 from models.provider import Provider
+from core.prompts.system import PromptManager
 
 from utils.image_encoding import encode_image_file_to_data_url
 
 
 def select_base_messages(conversation: Conversation) -> List[Message]:
+    work_dir = getattr(conversation, "work_dir", ".")
+    prompt_manager = PromptManager(work_dir)
+    
+    # Get effective history (filters condensed/truncated messages)
+    messages = prompt_manager.get_effective_history(conversation.messages)
+    
+    # Apply max_context_messages if set
+    # Note: We should ideally preserve the summary if it exists, even if max_ctx cuts it off.
+    # For now, we apply simple slicing to the result, which might lose the summary if the window is too small.
+    # A better approach would be to slice only the messages *after* the summary.
     settings = conversation.settings or {}
     max_ctx = settings.get("max_context_messages")
     if isinstance(max_ctx, int) and max_ctx > 0:
-        return conversation.messages[-max_ctx:]
-    return conversation.messages
+        if len(messages) > max_ctx:
+             # Ensure we keep the system prompt if it's first
+            if messages and messages[0].role == "system":
+                # System prompt + last (max_ctx-1) messages
+                kept = messages[-(max_ctx-1):]
+                
+                # Safety: If first kept message is 'tool', try to recover parent from full list
+                if kept and kept[0].role == "tool":
+                    # This is simple heuristic: expand slice by 1 until no tool or limit
+                    # Better: calculate strict index
+                    start_idx = len(messages) - (max_ctx - 1)
+                    while start_idx > 1 and messages[start_idx].role == "tool":
+                        start_idx -= 1
+                    kept = messages[start_idx:]
+                
+                return [messages[0]] + kept
+            else:
+                kept = messages[-max_ctx:]
+                if kept and kept[0].role == "tool":
+                    start_idx = len(messages) - max_ctx
+                    while start_idx > 0 and messages[start_idx].role == "tool":
+                        start_idx -= 1
+                    kept = messages[start_idx:]
+                return kept
+                
+    return messages
 
 
 def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict[str, Any]]:
@@ -22,18 +58,24 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
     for msg in messages:
         if msg.role == "tool":
             # message for tool result
+            # Use summary if available
+            content = msg.summary if msg.summary else msg.content
+            
             api_messages.append({
                 "role": "tool",
                 "tool_call_id": msg.tool_call_id,
-                "content": msg.content
+                "content": content
             })
             continue
 
         if msg.images and provider.supports_vision:
-            content: list[dict[str, Any]] = []
-
-            if msg.content:
-                content.append({"type": "text", "text": msg.content})
+            content_list: list[dict[str, Any]] = []
+            
+            # Use summary if available for text part
+            text_content = msg.summary if msg.summary else msg.content
+            
+            if text_content:
+                content_list.append({"type": "text", "text": text_content})
 
             for image in msg.images:
                 if not isinstance(image, str) or not image:
@@ -45,11 +87,13 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
                     image_url = encode_image_file_to_data_url(image) or ""
 
                 if image_url:
-                    content.append({"type": "image_url", "image_url": {"url": image_url}})
+                    content_list.append({"type": "image_url", "image_url": {"url": image_url}})
 
-            message_payload = {"role": msg.role, "content": content}
+            message_payload = {"role": msg.role, "content": content_list}
         else:
-            message_payload = {"role": msg.role, "content": msg.content}
+            # Use summary if available
+            content = msg.summary if msg.summary else msg.content
+            message_payload = {"role": msg.role, "content": content}
 
         # Add tool_calls if present (assistant role)
         if msg.tool_calls:
@@ -97,7 +141,32 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
         stream_enabled = bool(stream_enabled)
     except Exception:
         stream_enabled = True
-
+    
+    # Use PromptManager to generate the system prompt
+    work_dir = getattr(conversation, "work_dir", ".")
+    prompt_manager = PromptManager(work_dir)
+    
+    # Generate structured system prompt
+    system_prompt_content = prompt_manager.get_system_prompt(conversation, tools or [], provider)
+    
+    # Inject into api_messages
+    # 1. Find existing system message (from effective history)
+    system_msg_index = -1
+    for i, msg in enumerate(api_messages):
+        if msg.get("role") == "system":
+            system_msg_index = i
+            break
+            
+    if system_msg_index >= 0:
+        # Update existing system message
+        api_messages[system_msg_index]["content"] = system_prompt_content
+    else:
+        # Insert new system message at the beginning
+        api_messages.insert(0, {
+            "role": "system",
+            "content": system_prompt_content
+        })
+    
     body: Dict[str, Any] = {
         "model": conversation.model or provider.default_model,
         "messages": api_messages,
@@ -124,12 +193,5 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
             if k in protected or k in body:
                 continue
             body[k] = v
-
-    # Optional conversation system prompt
-    system_prompt = settings.get("system_prompt")
-    if isinstance(system_prompt, str) and system_prompt.strip():
-        # Avoid duplication if system already exists.
-        if not any(m.get("role") == "system" for m in api_messages if isinstance(m, dict)):
-            body["messages"] = [{"role": "system", "content": system_prompt.strip()}] + body["messages"]
 
     return body

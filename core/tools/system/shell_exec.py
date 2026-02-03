@@ -5,6 +5,10 @@ from typing import Any, Dict
 from core.tools.base import BaseTool, ToolContext, ToolResult
 
 class ExecuteCommandTool(BaseTool):
+    def __init__(self):
+        super().__init__()
+        self._approved_commands = set()
+
     @property
     def name(self) -> str:
         return "execute_command"
@@ -42,9 +46,13 @@ class ExecuteCommandTool(BaseTool):
         except Exception as e:
             return ToolResult(str(e), is_error=True)
 
-        # Critical approval
-        if not await context.ask_approval(f"Execute shell command in {cwd_path}?\n> {command}"):
-            return ToolResult("User denied execution", is_error=True)
+        # Critical approval with deduplication
+        # If command was already approved in this session, skip approval
+        cmd_key = f"{command}@{cwd_path}"
+        if cmd_key not in self._approved_commands:
+            if not await context.ask_approval(f"Execute shell command in {cwd_path}?\n> {command}"):
+                return ToolResult("User denied execution", is_error=True)
+            self._approved_commands.add(cmd_key)
 
         try:
             # Use shell=True for flexibility

@@ -1,6 +1,3 @@
-"""
-Conversation and Message data models
-"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,6 +20,13 @@ class Message:
     created_at: datetime = field(default_factory=datetime.now)
     response_time_ms: Optional[int] = None  # Response time in milliseconds
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    # Non-destructive history fields (inspired by Roo Code)
+    condense_parent: Optional[str] = None  # ID of the summary message that "condensed" this message
+    truncation_parent: Optional[str] = None # ID of the truncation marker (future use)
+    
+    # Per-message condensation (Agent Mode optimization)
+    summary: Optional[str] = None # Concise summary of this message (for token saving in future turns)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
@@ -37,7 +41,10 @@ class Message:
             'tokens': self.tokens,
             'created_at': self.created_at.isoformat(),
             'response_time_ms': self.response_time_ms,
-            'metadata': self.metadata
+            'metadata': self.metadata,
+            'condense_parent': self.condense_parent,
+            'truncation_parent': self.truncation_parent,
+            'summary': self.summary
         }
 
     @staticmethod
@@ -126,7 +133,10 @@ class Message:
             tokens=data.get('tokens'),
             created_at=created_at,
             response_time_ms=data.get('response_time_ms'),
-            metadata=metadata
+            metadata=metadata,
+            condense_parent=data.get('condense_parent'),
+            truncation_parent=data.get('truncation_parent'),
+            summary=data.get('summary')
         )
 
 
@@ -143,6 +153,7 @@ class Conversation:
     total_tokens: int = 0
     work_dir: str = ""  # Associated workspace directory
     settings: Dict[str, Any] = field(default_factory=dict)
+    mode: str = "chat" # "chat" or "agent"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
@@ -156,7 +167,8 @@ class Conversation:
             'updated_at': self.updated_at.isoformat(),
             'total_tokens': self.total_tokens,
             'work_dir': self.work_dir,
-            'settings': self.settings
+            'settings': self.settings,
+            'mode': self.mode
         }
 
     @classmethod
@@ -186,7 +198,8 @@ class Conversation:
             updated_at=updated_at,
             total_tokens=data.get('total_tokens', 0),
             work_dir=data.get('work_dir', ''),
-            settings=data.get('settings', {})
+            settings=data.get('settings', {}),
+            mode=data.get('mode', 'chat')
         )
 
     def to_json(self) -> str:

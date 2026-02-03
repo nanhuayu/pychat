@@ -20,6 +20,7 @@ from core.llm.client import LLMClient
 from services.provider_service import ProviderService
 from core.tools.manager import McpManager
 from controllers.stream_manager import StreamManager
+from controllers.prompt_optimizer import PromptOptimizer
 
 from .widgets.sidebar import Sidebar
 from .widgets.chat_view import ChatView
@@ -45,6 +46,7 @@ class MainWindow(QMainWindow):
         self.providers: list[Provider] = []
         self.current_conversation: Optional[Conversation] = None
         self._app_settings: dict = {}
+        self._syncing_input_selection: bool = False
 
         # Streaming events (thread-safe; StreamManager normalizes + guards request_id)
         self.stream_manager.token_received.connect(self._on_token_received)
@@ -52,6 +54,11 @@ class MainWindow(QMainWindow):
         self.stream_manager.response_step.connect(self._on_response_step)
         self.stream_manager.response_complete.connect(self._on_response_complete)
         self.stream_manager.response_error.connect(self._on_response_error)
+
+        self.prompt_optimizer = PromptOptimizer(self.client, parent=self)
+        self.prompt_optimizer.optimize_started.connect(self._on_prompt_optimize_started)
+        self.prompt_optimizer.optimize_complete.connect(self._on_prompt_optimize_complete)
+        self.prompt_optimizer.optimize_error.connect(self._on_prompt_optimize_error)
         
         self._setup_ui()
         self._load_data()
@@ -98,6 +105,8 @@ class MainWindow(QMainWindow):
         self.input_area.conversation_settings_requested.connect(self._open_conversation_settings)
         self.input_area.provider_settings_requested.connect(self._open_provider_settings)
         self.input_area.show_thinking_changed.connect(self._on_conversation_show_thinking_changed)
+        self.input_area.prompt_optimize_requested.connect(self._on_prompt_optimize_requested)
+        self.input_area.provider_model_changed.connect(self._on_input_provider_model_changed)
 
         # Vertical splitter: message area <-> input area (user-resizable)
         self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -281,7 +290,11 @@ class MainWindow(QMainWindow):
     
     def _on_conversation_selected(self, conversation_id: str):
         conversation = self.storage.load_conversation(conversation_id)
-        if conversation:
+        if not conversation:
+            return
+
+        self._syncing_input_selection = True
+        try:
             self.current_conversation = conversation
             self.chat_view.load_conversation(conversation)
             self.stats_panel.update_stats(conversation)
@@ -302,7 +315,24 @@ class MainWindow(QMainWindow):
 
             if conversation.model:
                 self.input_area.model_combo.setCurrentText(conversation.model)
-            
+
+            # Sync mode selection
+            try:
+                mode_slug = str(getattr(conversation, 'mode', '') or '')
+                idx = self.input_area.mode_combo.findData(mode_slug)
+                if idx >= 0:
+                    self.input_area.mode_combo.blockSignals(True)
+                    try:
+                        self.input_area.mode_combo.setCurrentIndex(idx)
+                    finally:
+                        self.input_area.mode_combo.blockSignals(False)
+                    try:
+                        self.input_area.apply_mode_policy(apply_defaults=False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             # Update chat header
             self.chat_view.update_header(
                 provider_name=provider_name,
@@ -323,7 +353,9 @@ class MainWindow(QMainWindow):
                 )
 
             self._sync_input_enabled()
-    
+        finally:
+            self._syncing_input_selection = False
+
     def _new_conversation(self):
         self.current_conversation = Conversation()
         self.chat_view.clear()
@@ -332,6 +364,53 @@ class MainWindow(QMainWindow):
         self.chat_view.update_work_dir("")
         self.input_area.set_work_dir("")
         self._sync_input_enabled()
+
+    def _on_input_provider_model_changed(self, provider_id: str, model: str) -> None:
+        if bool(getattr(self, '_syncing_input_selection', False)):
+            return
+        provider_name = ''
+        try:
+            for p in getattr(self, 'providers', []) or []:
+                if getattr(p, 'id', '') == provider_id:
+                    provider_name = getattr(p, 'name', '') or ''
+                    break
+        except Exception:
+            provider_name = ''
+
+        msg_count = 0
+        if self.current_conversation:
+            try:
+                msg_count = len(self.current_conversation.messages)
+            except Exception:
+                msg_count = 0
+
+        try:
+            self.chat_view.update_header(provider_name=provider_name, model=(model or ''), msg_count=msg_count)
+        except Exception:
+            pass
+
+        if not self.current_conversation:
+            return
+
+        # Keep in-memory conversation selection consistent; persist only if the conversation already has content.
+        try:
+            if provider_id:
+                self.current_conversation.provider_id = provider_id
+            if isinstance(model, str):
+                self.current_conversation.model = model.strip()
+        except Exception:
+            pass
+
+        try:
+            self.stats_panel.update_stats(self.current_conversation)
+        except Exception:
+            pass
+
+        try:
+            if getattr(self.current_conversation, 'messages', None):
+                self.storage.save_conversation(self.current_conversation)
+        except Exception:
+            pass
 
     def _on_work_dir_changed(self, path: str):
         """Handle workspace directory change"""
@@ -387,6 +466,77 @@ class MainWindow(QMainWindow):
         self.sidebar.select_conversation(dup.id)
         self._on_conversation_selected(dup.id)
     
+    def _on_prompt_optimize_started(self, conversation_id: str, request_id: str) -> None:
+        if self.current_conversation and self.current_conversation.id == conversation_id:
+            try:
+                self.input_area.set_prompt_optimize_busy(True)
+            except Exception:
+                pass
+
+    def _on_prompt_optimize_complete(self, conversation_id: str, request_id: str, text: str) -> None:
+        if not self.current_conversation or self.current_conversation.id != conversation_id:
+            return
+        try:
+            self.input_area.set_prompt_optimize_busy(False)
+            self.input_area.text_input.setPlainText((text or '').strip())
+            cursor = self.input_area.text_input.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.input_area.text_input.setTextCursor(cursor)
+            self.input_area.text_input.setFocus()
+        except Exception:
+            pass
+
+    def _on_prompt_optimize_error(self, conversation_id: str, request_id: str, err: str) -> None:
+        if not self.current_conversation or self.current_conversation.id != conversation_id:
+            return
+        try:
+            self.input_area.set_prompt_optimize_busy(False)
+        except Exception:
+            pass
+        QMessageBox.warning(self, '提示词优化失败', err or '未知错误')
+
+    def _on_prompt_optimize_requested(self, raw_text: str) -> None:
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+
+        if self.stream_manager.is_streaming(self.current_conversation.id):
+            QMessageBox.information(self, '提示', '当前会话正在生成中，请先停止或等待完成。')
+            return
+
+        text = (raw_text or '').strip()
+        if not text:
+            return
+
+        provider_id = self.input_area.get_selected_provider_id()
+        base_model = self.input_area.get_selected_model()
+
+        provider = None
+        for p in self.providers:
+            if p.id == provider_id:
+                provider = p
+                break
+
+        if not provider:
+            QMessageBox.warning(self, '错误', '请先在设置中配置服务商')
+            return
+
+        if not base_model:
+            QMessageBox.warning(self, '错误', '请选择一个模型')
+            return
+
+        # Allow per-conversation override
+        settings = dict(self.current_conversation.settings or {})
+        opt_model = (settings.get('prompt_optimizer_model') or '').strip() or base_model
+        opt_sys = (settings.get('prompt_optimizer_system_prompt') or '').strip() or None
+
+        self.prompt_optimizer.start(
+            provider=provider,
+            conversation_id=self.current_conversation.id,
+            raw_prompt=text,
+            model=opt_model,
+            system_prompt=opt_sys,
+        )
+
     def _send_message(self, content: str, images: list):
         if not self.current_conversation:
             self.current_conversation = Conversation()
@@ -468,10 +618,22 @@ class MainWindow(QMainWindow):
 
         enable_thinking = bool((conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True)))
 
-        # Get tool toggles from input area
-        enable_search = self.input_area.is_search_enabled()
-        enable_mcp = self.input_area.is_mcp_enabled()
-        mode = self.input_area.get_selected_mode().lower()
+        # Get tool toggles from input area (mode policy already applied)
+        try:
+            enable_search, enable_mcp = self.input_area.get_effective_tool_flags()
+        except Exception:
+            enable_search = self.input_area.is_search_enabled()
+            enable_mcp = self.input_area.is_mcp_enabled()
+        try:
+            mode = (self.input_area.get_selected_mode_slug() or '').strip().lower()
+        except Exception:
+            mode = self.input_area.get_selected_mode().lower()
+
+        try:
+            if conversation is not None:
+                conversation.mode = mode
+        except Exception:
+            pass
 
         state = self.stream_manager.start(
             provider,
@@ -537,6 +699,22 @@ class MainWindow(QMainWindow):
                         break
             if self.current_conversation.model:
                 self.input_area.model_combo.setCurrentText(self.current_conversation.model)
+            # Sync mode selection (settings)
+            try:
+                mode_slug = str(getattr(self.current_conversation, 'mode', '') or '')
+                idx = self.input_area.mode_combo.findData(mode_slug)
+                if idx >= 0:
+                    self.input_area.mode_combo.blockSignals(True)
+                    try:
+                        self.input_area.mode_combo.setCurrentIndex(idx)
+                    finally:
+                        self.input_area.mode_combo.blockSignals(False)
+                    try:
+                        self.input_area.apply_mode_policy(apply_defaults=False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             self.input_area.set_show_thinking(bool((self.current_conversation.settings or {}).get('show_thinking', True)))
 
             conversations = self.storage.list_conversations()

@@ -1,9 +1,12 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import uuid
 import json
+
+if TYPE_CHECKING:
+    from models.state import SessionState
 
 
 @dataclass
@@ -21,7 +24,15 @@ class Message:
     response_time_ms: Optional[int] = None  # Response time in milliseconds
     metadata: Dict[str, Any] = field(default_factory=dict)
     
-    # Non-destructive history fields (inspired by Roo Code)
+    # === Event Sourcing: Global sequence ID for time-travel/rollback ===
+    seq_id: int = 0  # Assigned by Conversation.next_seq_id()
+    
+    # === State Snapshot (for rollback) ===
+    # Attached at key points (after tool execution, assistant response complete)
+    # When rolling back, restore state from the last message with a snapshot
+    state_snapshot: Optional[Dict[str, Any]] = None  # Serialized SessionState
+    
+    # === Legacy: Non-destructive history fields (kept for backward compatibility) ===
     condense_parent: Optional[str] = None  # ID of the summary message that "condensed" this message
     truncation_parent: Optional[str] = None # ID of the truncation marker (future use)
     
@@ -30,7 +41,7 @@ class Message:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
-        return {
+        result = {
             'id': self.id,
             'role': self.role,
             'content': self.content,
@@ -42,10 +53,15 @@ class Message:
             'created_at': self.created_at.isoformat(),
             'response_time_ms': self.response_time_ms,
             'metadata': self.metadata,
+            'seq_id': self.seq_id,
             'condense_parent': self.condense_parent,
             'truncation_parent': self.truncation_parent,
             'summary': self.summary
         }
+        # Only serialize state_snapshot if present (to save space)
+        if self.state_snapshot:
+            result['state_snapshot'] = self.state_snapshot
+        return result
 
     @staticmethod
     def _normalize_content_and_images(
@@ -134,6 +150,8 @@ class Message:
             created_at=created_at,
             response_time_ms=data.get('response_time_ms'),
             metadata=metadata,
+            seq_id=data.get('seq_id', 0),
+            state_snapshot=data.get('state_snapshot'),
             condense_parent=data.get('condense_parent'),
             truncation_parent=data.get('truncation_parent'),
             summary=data.get('summary')
@@ -154,10 +172,21 @@ class Conversation:
     work_dir: str = ""  # Associated workspace directory
     settings: Dict[str, Any] = field(default_factory=dict)
     mode: str = "chat" # "chat" or "agent"
+    
+    # === Schema version for migration (v1=legacy condense_parent, v2=state-based) ===
+    version: int = 2
+    
+    # === SessionState: Centralized state management ===
+    # Lazy-loaded to avoid circular import; use get_state() method
+    _state_dict: Dict[str, Any] = field(default_factory=dict)
+    
+    # === Sequence counter for time-travel/rollback ===
+    _seq_counter: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
         return {
+            'version': self.version,
             'id': self.id,
             'title': self.title,
             'messages': [msg.to_dict() for msg in self.messages],
@@ -168,12 +197,14 @@ class Conversation:
             'total_tokens': self.total_tokens,
             'work_dir': self.work_dir,
             'settings': self.settings,
-            'mode': self.mode
+            'mode': self.mode,
+            'state': self._state_dict,
+            '_seq_counter': self._seq_counter
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Conversation':
-        """Create from dictionary"""
+        """Create from dictionary with backward compatibility"""
         messages = [Message.from_dict(m) for m in data.get('messages', [])]
         
         created_at = data.get('created_at')
@@ -187,8 +218,27 @@ class Conversation:
             updated_at = datetime.fromisoformat(updated_at)
         elif updated_at is None:
             updated_at = datetime.now()
-            
-        return cls(
+        
+        # Version detection: missing version field means legacy v1 format
+        version = data.get('version', 1)
+        
+        # Load state dict (empty for v1 legacy data)
+        state_dict = data.get('state', {})
+        
+        # Load or compute seq_counter
+        seq_counter = data.get('_seq_counter', 0)
+        if seq_counter == 0 and messages:
+            # Migration: assign seq_id to messages that don't have one
+            max_seq = max((m.seq_id for m in messages), default=0)
+            if max_seq == 0:
+                # All messages lack seq_id, assign sequentially
+                for i, msg in enumerate(messages, start=1):
+                    msg.seq_id = i
+                seq_counter = len(messages)
+            else:
+                seq_counter = max_seq
+        
+        conv = cls(
             id=data.get('id', str(uuid.uuid4())),
             title=data.get('title', 'Imported Chat'),
             messages=messages,
@@ -199,8 +249,12 @@ class Conversation:
             total_tokens=data.get('total_tokens', 0),
             work_dir=data.get('work_dir', ''),
             settings=data.get('settings', {}),
-            mode=data.get('mode', 'chat')
+            mode=data.get('mode', 'chat'),
+            version=version,
+            _state_dict=state_dict,
+            _seq_counter=seq_counter
         )
+        return conv
 
     def to_json(self) -> str:
         """Serialize to JSON string"""
@@ -290,3 +344,100 @@ class Conversation:
                     title += "..."
                 self.title = title
                 break
+    # ============ Sequence ID Management ============
+    
+    def next_seq_id(self) -> int:
+        """Get next sequence ID and increment counter"""
+        self._seq_counter += 1
+        return self._seq_counter
+
+    def current_seq_id(self) -> int:
+        """Get current sequence ID without incrementing"""
+        return self._seq_counter
+
+    def add_message_with_seq(self, message: Message) -> Message:
+        """Add a message with automatic seq_id assignment"""
+        if message.seq_id == 0:
+            message.seq_id = self.next_seq_id()
+        self.add_message(message)
+        return message
+
+    # ============ SessionState Management ============
+    
+    def get_state(self) -> 'SessionState':
+        """Get the SessionState object (lazy-loaded to avoid circular import)"""
+        from models.state import SessionState
+        return SessionState.from_dict(self._state_dict)
+
+    def set_state(self, state: 'SessionState'):
+        """Update the internal state dictionary from a SessionState object"""
+        self._state_dict = state.to_dict()
+        self.updated_at = datetime.now()
+
+    def update_state_dict(self, updates: Dict[str, Any]):
+        """Directly update state dictionary fields"""
+        self._state_dict.update(updates)
+        self.updated_at = datetime.now()
+
+    # ============ Rollback / Time-Travel ============
+    
+    def rollback_to_seq(self, target_seq_id: int) -> bool:
+        """
+        Rollback conversation to a specific seq_id.
+        
+        This will:
+        1. Remove all messages with seq_id > target_seq_id
+        2. Restore state from the last message with a state_snapshot
+        
+        Returns True if rollback was successful.
+        """
+        if target_seq_id <= 0:
+            return False
+        
+        # 1. Filter messages
+        original_count = len(self.messages)
+        self.messages = [m for m in self.messages if m.seq_id <= target_seq_id]
+        
+        if len(self.messages) == original_count:
+            # No messages removed, target_seq_id might be current or future
+            return False
+        
+        # 2. Reset seq_counter
+        self._seq_counter = target_seq_id
+        
+        # 3. Find and restore the latest state snapshot
+        from models.state import SessionState
+        restored = False
+        for msg in reversed(self.messages):
+            if msg.state_snapshot:
+                self._state_dict = msg.state_snapshot.copy()
+                restored = True
+                break
+        
+        if not restored:
+            # No snapshot found, reset to empty state
+            self._state_dict = {}
+        
+        self.updated_at = datetime.now()
+        return True
+
+    def attach_state_snapshot(self, message_id: str):
+        """
+        Attach current state as a snapshot to a specific message.
+        
+        Call this after tool execution or at key checkpoints
+        to enable rollback to that point.
+        """
+        for msg in self.messages:
+            if msg.id == message_id:
+                msg.state_snapshot = self._state_dict.copy()
+                self.updated_at = datetime.now()
+                return True
+        return False
+
+    def get_last_message_with_snapshot(self) -> Optional[Message]:
+        """Find the most recent message that has a state snapshot"""
+        for msg in reversed(self.messages):
+            if msg.state_snapshot:
+                return msg
+        return None

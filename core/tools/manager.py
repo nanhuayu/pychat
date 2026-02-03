@@ -32,10 +32,9 @@ from core.tools.system.filesystem import LsTool, ReadFileTool, GrepTool
 from core.tools.system.python_exec import PythonExecTool
 from core.tools.system.file_ops import WriteToFileTool, EditFileTool, DeleteFileTool
 from core.tools.system.shell_exec import ExecuteCommandTool
-from core.tools.system.memory import MemoryTool
 from core.tools.system.skills import SkillTool
 from core.tools.system.patch import PatchTool
-from core.tools.system.todo import TodoListTool
+from core.tools.system.state_mgr import StateMgrTool
 
 class McpManager:
     _instance = None
@@ -76,8 +75,9 @@ class McpManager:
             PythonExecTool(),
             WriteToFileTool(), EditFileTool(), DeleteFileTool(),
             ExecuteCommandTool(),
-            MemoryTool(), SkillTool(),
-            PatchTool(), TodoListTool()
+            SkillTool(),
+            PatchTool(),
+            StateMgrTool()  # Unified state management + Condensation
         ]
         for tool in tools:
             self.registry.register(tool)
@@ -119,23 +119,30 @@ class McpManager:
         # Yes, for performance/context size.
         
         all_schemas = self.registry.get_all_tool_schemas()
-        
-        filtered_schemas = []
+
+        filtered_schemas: List[Dict[str, Any]] = []
         for schema in all_schemas:
-            name = schema["function"]["name"]
-            
-            # Identify tool type by name prefix or registry metadata
+            fn = schema.get("function") or {}
+            name = fn.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+
             is_mcp = name.startswith("mcp__")
             is_search = name == "builtin_web_search"
-            is_system = not is_mcp and not is_search
-            
-            if is_mcp and not include_mcp:
+
+            # Tool exposure policy:
+            # - If include_mcp is False: expose ONLY search tool (if requested) and nothing else.
+            #   This prevents summary/chat modes from accidentally getting system tools.
+            # - If include_mcp is True: expose system tools + MCP tools; search tool is optional.
+            if not include_mcp:
+                if is_search and include_search:
+                    filtered_schemas.append(schema)
                 continue
+
+            # include_mcp == True
             if is_search and not include_search:
                 continue
-            if is_system and not include_mcp:
-                continue
-                
+
             filtered_schemas.append(schema)
 
         return filtered_schemas

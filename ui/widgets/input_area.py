@@ -6,13 +6,17 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QTextEdit, QLabel, QFileDialog, QComboBox,
     QFrame, QSizePolicy, QToolButton, QListWidget,
-    QAbstractItemView
+    QAbstractItemView,
+    QStyle,
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QStringListModel, QRect
 from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QTextCursor
 import base64
 import os
 from typing import List, Dict, Any, Optional
+
+from core.modes import ModeManager
+from core.modes.policy import get_mode_feature_policy, clamp_feature_flags
 
 from ui.utils.image_loader import load_pixmap
 from ui.utils.image_utils import extract_images_from_mime, is_supported_image_path
@@ -154,6 +158,28 @@ class MessageTextEdit(QTextEdit):
     def set_work_dir(self, path: str):
         self.work_dir = path
 
+    def _refresh_modes(self, work_dir: str) -> None:
+        try:
+            cur_slug = str(self.mode_combo.currentData() or '')
+        except Exception:
+            cur_slug = ''
+
+        try:
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.clear()
+            self._mode_manager = ModeManager(work_dir or '.')
+            for m in self._mode_manager.list_modes():
+                self.mode_combo.addItem(m.name, m.slug)
+            if cur_slug:
+                idx = self.mode_combo.findData(cur_slug)
+                if idx >= 0:
+                    self.mode_combo.setCurrentIndex(idx)
+        finally:
+            try:
+                self.mode_combo.blockSignals(False)
+            except Exception:
+                pass
+
     def insertFromMimeData(self, source):
         # Handle screenshot paste / drag-drop image -> add as attachment instead of inserting into text.
         try:
@@ -293,7 +319,9 @@ class InputArea(QWidget):
     show_thinking_changed = pyqtSignal(bool)
     mcp_toggled = pyqtSignal(bool)  # MCP 开关
     search_toggled = pyqtSignal(bool)  # 搜索开关
+    prompt_optimize_requested = pyqtSignal(str)  # Optimize current input prompt
     
+    provider_model_changed = pyqtSignal(str, str)  # provider_id, model
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("input_container")
@@ -301,6 +329,7 @@ class InputArea(QWidget):
         self._attachments: List[Dict[str, Any]] = []  # [{'path': str, 'type': 'image'|'file'}]
         self._providers = []
         self._suppress_thinking_signal = False
+        self._suppress_tool_signals = False
         self._mcp_enabled = False
         self._search_enabled = False
         self._work_dir = ""
@@ -310,6 +339,39 @@ class InputArea(QWidget):
     def set_work_dir(self, path: str):
         self._work_dir = path
         self.text_input.set_work_dir(path)
+        try:
+            self._refresh_modes(path)
+        except Exception:
+            pass
+
+        # Re-apply mode policy after refresh (modes.json may change groups).
+        try:
+            self._apply_mode_policy(apply_defaults=False)
+        except Exception:
+            pass
+
+    def _refresh_modes(self, work_dir: str) -> None:
+        """Reload modes from current work_dir and keep selection if possible."""
+        try:
+            cur_slug = str(self.mode_combo.currentData() or '')
+        except Exception:
+            cur_slug = ''
+
+        try:
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.clear()
+            self._mode_manager = ModeManager(work_dir or '.')
+            for m in self._mode_manager.list_modes():
+                self.mode_combo.addItem(m.name, m.slug)
+            if cur_slug:
+                idx = self.mode_combo.findData(cur_slug)
+                if idx >= 0:
+                    self.mode_combo.setCurrentIndex(idx)
+        finally:
+            try:
+                self.mode_combo.blockSignals(False)
+            except Exception:
+                pass
         
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -365,6 +427,7 @@ class InputArea(QWidget):
         self.provider_combo.setMinimumWidth(70)
         self.provider_combo.setMaximumWidth(110)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        self.provider_combo.currentIndexChanged.connect(self._emit_provider_model_changed)
         toolbar.addWidget(self.provider_combo)
         
         # Model selector
@@ -373,15 +436,19 @@ class InputArea(QWidget):
         self.model_combo.setMinimumWidth(120)
         self.model_combo.setMaximumWidth(200)
         self.model_combo.setEditable(True)
+        self.model_combo.currentTextChanged.connect(self._emit_provider_model_changed)
         toolbar.addWidget(self.model_combo)
 
         # Mode selector
         self.mode_combo = QComboBox()
         self.mode_combo.setObjectName("mode_combo")
-        self.mode_combo.addItems(["Chat", "Agent"])
+        # Populate modes from ModeManager
+        self._mode_manager = ModeManager()
+        for m in self._mode_manager.list_modes():
+            self.mode_combo.addItem(m.name, m.slug)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.mode_combo.setToolTip("选择对话模式")
         self.mode_combo.setMinimumWidth(70)
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         toolbar.addWidget(self.mode_combo)
         
         # Thinking toggle
@@ -428,42 +495,134 @@ class InputArea(QWidget):
         toolbar.addWidget(self.provider_settings_btn)
         
         toolbar.addStretch()
-        
-        # Send button
-        self.send_btn = QPushButton("发送")
-        self.send_btn.setObjectName("send_btn")
-        self.send_btn.setFixedHeight(28)
+        # Prompt optimize button (icon)
+        self.prompt_optimize_btn = QToolButton()
+        self.prompt_optimize_btn.setObjectName("toolbar_btn")
+        self.prompt_optimize_btn.setText("✨")
+        # self.prompt_optimize_btn.setFixedSize(30, 28)
+        self.prompt_optimize_btn.setToolTip("优化提示词")
+        self.prompt_optimize_btn.clicked.connect(self._on_prompt_optimize_clicked)
+        toolbar.addWidget(self.prompt_optimize_btn)
+        # Send button (icon)
+        self.send_btn = QToolButton()
+        self.send_btn.setObjectName("toolbar_btn")
+        # self.send_btn.setText("➡") 
+        # self.send_btn.setText("⬆")
+        self.send_btn.setText("➤")
+        # self.send_btn.setFixedSize(34, 28)
+        self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
         self.send_btn.clicked.connect(self._on_send_btn_clicked)
         toolbar.addWidget(self.send_btn)
         
         wrapper_layout.addLayout(toolbar)
         layout.addWidget(input_wrapper)
-        self._on_mode_changed(self.mode_combo.currentText())
 
-    
+        # Apply initial policy (enable/disable only) based on default mode.
+        # Do not force defaults here; the current conversation/settings will sync later.
+        try:
+            self._apply_mode_policy(apply_defaults=False)
+        except Exception:
+            pass
+
+    def _on_mode_changed(self, index: int) -> None:
+        try:
+            self._apply_mode_policy(apply_defaults=True)
+        except Exception:
+            pass
+
+    def _apply_mode_policy(self, apply_defaults: bool = True) -> None:
+        """Apply mode-derived policy to Thinking/MCP/Search toggles.
+
+        - Disallowed toggles are disabled and forced off.
+        - If apply_defaults is True, allowed toggles are set to the mode defaults.
+        """
+        slug = self.get_selected_mode_slug()
+        mode = self._mode_manager.get(slug)
+        policy = get_mode_feature_policy(mode)
+
+        # Thinking toggle is always allowed, but can have defaults.
+        if apply_defaults:
+            # Apply as a real user-visible toggle change so the app state stays in sync.
+            self.thinking_toggle.setChecked(bool(policy.default_thinking))
+
+        # MCP/Search toggles: suppress signals while applying.
+        self._suppress_tool_signals = True
+        try:
+            # MCP
+            self.mcp_toggle.setEnabled(bool(policy.allow_mcp) and (not self._is_streaming))
+            if not policy.allow_mcp:
+                self.mcp_toggle.setChecked(False)
+            elif apply_defaults:
+                self.mcp_toggle.setChecked(bool(policy.default_mcp))
+
+            # Search
+            self.search_toggle.setEnabled(bool(policy.allow_search) and (not self._is_streaming))
+            if not policy.allow_search:
+                self.search_toggle.setChecked(False)
+            elif apply_defaults:
+                self.search_toggle.setChecked(bool(policy.default_search))
+
+            self._mcp_enabled = bool(self.mcp_toggle.isChecked())
+            self._search_enabled = bool(self.search_toggle.isChecked())
+        finally:
+            self._suppress_tool_signals = False
     def set_streaming_state(self, is_streaming: bool):
         self._is_streaming = is_streaming
         if is_streaming:
-            self.send_btn.setText("停止")
-            self.send_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #d73a49;
-                    color: white;
-                    border: none;
-                    border-radius: 4px;
-                }
-                QPushButton:hover {
-                    background-color: #cb2431;
-                }
-            """)
+            try:
+                self.send_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+            except Exception:
+                pass
             self.send_btn.setToolTip("停止生成")
             self.text_input.setEnabled(False)
+            try:
+                self.prompt_optimize_btn.setEnabled(False)
+            except Exception:
+                pass
+            try:
+                # Streaming disables tool toggles (policy still applies)
+                self.mcp_toggle.setEnabled(False)
+                self.search_toggle.setEnabled(False)
+            except Exception:
+                pass
         else:
-            self.send_btn.setText("发送")
-            self.send_btn.setStyleSheet("")
+            try:
+                self.send_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
+            except Exception:
+                pass
             self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
             self.text_input.setEnabled(True)
             self.text_input.setFocus()
+            try:
+                # only re-enable if not busy
+                self.prompt_optimize_btn.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self._apply_mode_policy(apply_defaults=False)
+            except Exception:
+                pass
+
+
+    def set_prompt_optimize_busy(self, busy: bool) -> None:
+        try:
+            self.prompt_optimize_btn.setEnabled((not busy) and (not self._is_streaming))
+            self.prompt_optimize_btn.setToolTip("优化中..." if busy else "优化提示词")
+        except Exception:
+            pass
+
+    def _on_prompt_optimize_clicked(self) -> None:
+        try:
+            text = (self.text_input.toPlainText() or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            return
+        try:
+            self.set_prompt_optimize_busy(True)
+        except Exception:
+            pass
+        self.prompt_optimize_requested.emit(text)
 
     def _on_send_btn_clicked(self):
         if self._is_streaming:
@@ -497,7 +656,17 @@ class InputArea(QWidget):
                     self.model_combo.setCurrentIndex(idx)
                 else:
                     self.model_combo.setCurrentText(provider.default_model)
+
+        self._emit_provider_model_changed()
     
+    def _emit_provider_model_changed(self) -> None:
+        try:
+            provider_id = self.get_selected_provider_id()
+            model = (self.get_selected_model() or "").strip()
+        except Exception:
+            return
+        self.provider_model_changed.emit(provider_id, model)
+
     def get_selected_provider_id(self) -> str:
         return self.provider_combo.currentData() or ""
     
@@ -506,6 +675,12 @@ class InputArea(QWidget):
 
     def get_selected_mode(self) -> str:
         return self.mode_combo.currentText()
+
+    def get_selected_mode_slug(self) -> str:
+        try:
+            return str(self.mode_combo.currentData() or '').strip() or (self.get_selected_mode() or '').strip().lower()
+        except Exception:
+            return (self.get_selected_mode() or '').strip().lower()
 
     def set_show_thinking(self, enabled: bool):
         self._suppress_thinking_signal = True
@@ -518,29 +693,49 @@ class InputArea(QWidget):
         if self._suppress_thinking_signal:
             return
         self.show_thinking_changed.emit(bool(checked))
-
-    def _on_mode_changed(self, mode_text: str):
-        is_agent = str(mode_text or "").strip().lower() == "agent"
-        self.mcp_toggle.setEnabled(is_agent)
-        desired = is_agent
-        if self.mcp_toggle.isChecked() != desired:
-            self.mcp_toggle.setChecked(desired)
-        if not is_agent:
-            self._mcp_enabled = False
     
     def _on_mcp_toggled(self, checked: bool):
-        self._mcp_enabled = checked
-        self.mcp_toggled.emit(checked)
+        if self._suppress_tool_signals:
+            self._mcp_enabled = bool(checked)
+            return
+        self._mcp_enabled = bool(checked)
+        self.mcp_toggled.emit(bool(checked))
     
     def _on_search_toggled(self, checked: bool):
-        self._search_enabled = checked
-        self.search_toggled.emit(checked)
+        if self._suppress_tool_signals:
+            self._search_enabled = bool(checked)
+            return
+        self._search_enabled = bool(checked)
+        self.search_toggled.emit(bool(checked))
     
     def is_mcp_enabled(self) -> bool:
         return self._mcp_enabled
     
     def is_search_enabled(self) -> bool:
         return self._search_enabled
+
+    def get_effective_tool_flags(self) -> tuple[bool, bool]:
+        """Return (enable_search, enable_mcp) clamped by current mode policy."""
+        try:
+            slug = self.get_selected_mode_slug()
+            mode = self._mode_manager.get(slug)
+            policy = get_mode_feature_policy(mode)
+            _t, mcp, search = clamp_feature_flags(
+                policy,
+                enable_thinking=bool(self.thinking_toggle.isChecked()),
+                enable_mcp=bool(self._mcp_enabled),
+                enable_search=bool(self._search_enabled),
+            )
+            return bool(search), bool(mcp)
+        except Exception:
+            return bool(self._search_enabled), bool(self._mcp_enabled)
+
+    def apply_mode_policy(self, apply_defaults: bool = False) -> None:
+        """Public wrapper for applying mode policy.
+
+        Use apply_defaults=False when syncing UI from stored conversation settings.
+        """
+        self._apply_mode_policy(apply_defaults=apply_defaults)
     
     def _attach_file(self):
         file_paths, _ = QFileDialog.getOpenFileNames(

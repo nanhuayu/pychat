@@ -22,6 +22,7 @@ from typing import List, Optional
 
 from models.conversation import Conversation
 from models.provider import Provider
+from core.modes import ModeManager
 
 
 class ConversationSettingsDialog(QDialog):
@@ -84,6 +85,26 @@ class ConversationSettingsDialog(QDialog):
         self.model_combo.setEditable(True)
         model_form.addRow("模型", self.model_combo)
 
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("conv_mode")
+        try:
+            mm = ModeManager(getattr(conversation, "work_dir", "") or ".")
+            for m in mm.list_modes():
+                self.mode_combo.addItem(m.name, m.slug)
+        except Exception:
+            # Fallback: minimal legacy modes
+            self.mode_combo.addItem("Chat", "chat")
+            self.mode_combo.addItem("Agent", "agent")
+        # Select current
+        try:
+            cur_slug = str(getattr(conversation, "mode", "chat") or "chat")
+            idx = self.mode_combo.findData(cur_slug)
+            if idx >= 0:
+                self.mode_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        model_form.addRow("模式", self.mode_combo)
+
         # Populate providers
         for p in self._providers:
             self.provider_combo.addItem(p.name, p.id)
@@ -96,6 +117,53 @@ class ConversationSettingsDialog(QDialog):
             self.model_combo.setCurrentText(conversation.model)
 
         root.addWidget(model_group)
+
+        # ===== 压缩/优化 =====
+        summary_group = QGroupBox("压缩/优化")
+        summary_form = QFormLayout(summary_group)
+        summary_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        summary_form.setHorizontalSpacing(10)
+        summary_form.setVerticalSpacing(6)
+
+        self.summary_model_combo = QComboBox()
+        self.summary_model_combo.setObjectName("conv_summary_model")
+        self.summary_model_combo.setEditable(True)
+        summary_model_val = (conversation.settings or {}).get("summary_model", "") or ""
+        if summary_model_val:
+            self.summary_model_combo.setCurrentText(str(summary_model_val))
+        summary_form.addRow("压缩模型", self.summary_model_combo)
+
+        self.summary_include_tool_details = QCheckBox("包含工具详情（更耗 token）")
+        self.summary_include_tool_details.setObjectName("conv_summary_include_tool_details")
+        self.summary_include_tool_details.setChecked(bool((conversation.settings or {}).get("summary_include_tool_details", False)))
+        summary_form.addRow("工具信息", self.summary_include_tool_details)
+
+        self.summary_system_prompt_edit = QTextEdit()
+        self.summary_system_prompt_edit.setObjectName("conv_summary_system_prompt")
+        self.summary_system_prompt_edit.setAcceptRichText(False)
+        self.summary_system_prompt_edit.setMaximumHeight(70)
+        self.summary_system_prompt_edit.setPlaceholderText("可选：用于压缩/总结请求的 system prompt（留空使用内置简洁模板）")
+        self.summary_system_prompt_edit.setText((conversation.settings or {}).get("summary_system_prompt", "") or "")
+        summary_form.addRow("压缩System", self.summary_system_prompt_edit)
+
+        # Prompt optimizer settings (per-conversation override)
+        self.prompt_optimizer_model_combo = QComboBox()
+        self.prompt_optimizer_model_combo.setObjectName("conv_prompt_optimizer_model")
+        self.prompt_optimizer_model_combo.setEditable(True)
+        opt_model_val = (conversation.settings or {}).get("prompt_optimizer_model", "") or ""
+        if opt_model_val:
+            self.prompt_optimizer_model_combo.setCurrentText(str(opt_model_val))
+        summary_form.addRow("优化模型", self.prompt_optimizer_model_combo)
+
+        self.prompt_optimizer_system_prompt_edit = QTextEdit()
+        self.prompt_optimizer_system_prompt_edit.setObjectName("conv_prompt_optimizer_system_prompt")
+        self.prompt_optimizer_system_prompt_edit.setAcceptRichText(False)
+        self.prompt_optimizer_system_prompt_edit.setMaximumHeight(70)
+        self.prompt_optimizer_system_prompt_edit.setPlaceholderText("可选：用于‘优化提示词’请求的 system prompt（留空使用内置模板）")
+        self.prompt_optimizer_system_prompt_edit.setText((conversation.settings or {}).get("prompt_optimizer_system_prompt", "") or "")
+        summary_form.addRow("优化System", self.prompt_optimizer_system_prompt_edit)
+
+        root.addWidget(summary_group)
 
         # ===== 采样参数 =====
         params_group = QGroupBox("采样参数")
@@ -186,10 +254,13 @@ class ConversationSettingsDialog(QDialog):
         # Update provider/model from dialog
         provider_id = self.provider_combo.currentData() or ""
         model = self.model_combo.currentText().strip()
+        mode_slug = self.mode_combo.currentData() if hasattr(self, "mode_combo") else None
         if provider_id:
             self._conversation.provider_id = provider_id
         if model:
             self._conversation.model = model
+        if isinstance(mode_slug, str) and mode_slug.strip():
+            self._conversation.mode = mode_slug.strip()
 
         settings = dict(self._conversation.settings or {})
 
@@ -201,6 +272,42 @@ class ConversationSettingsDialog(QDialog):
         settings["stream"] = bool(self.stream_enabled.isChecked())
         settings["show_thinking"] = bool(self.show_thinking.isChecked())
 
+        # Summary/compression settings
+        if hasattr(self, "summary_model_combo"):
+            summary_model = self.summary_model_combo.currentText().strip()
+            if summary_model:
+                settings["summary_model"] = summary_model
+            else:
+                settings.pop("summary_model", None)
+
+        # Prompt optimizer settings
+        if hasattr(self, "prompt_optimizer_model_combo"):
+            opt_model = self.prompt_optimizer_model_combo.currentText().strip()
+            if opt_model:
+                settings["prompt_optimizer_model"] = opt_model
+            else:
+                settings.pop("prompt_optimizer_model", None)
+
+        if hasattr(self, "prompt_optimizer_system_prompt_edit"):
+            opt_sys = (self.prompt_optimizer_system_prompt_edit.toPlainText() or "").strip()
+            if opt_sys:
+                settings["prompt_optimizer_system_prompt"] = opt_sys
+            else:
+                settings.pop("prompt_optimizer_system_prompt", None)
+
+        if hasattr(self, "summary_system_prompt_edit"):
+            summary_sys = (self.summary_system_prompt_edit.toPlainText() or "").strip()
+            if summary_sys:
+                settings["summary_system_prompt"] = summary_sys
+            else:
+                settings.pop("summary_system_prompt", None)
+
+        if hasattr(self, "summary_include_tool_details"):
+            if bool(self.summary_include_tool_details.isChecked()):
+                settings["summary_include_tool_details"] = True
+            else:
+                settings.pop("summary_include_tool_details", None)
+
         # Clean empty values
         if not settings.get("system_prompt"):
             settings.pop("system_prompt", None)
@@ -211,14 +318,46 @@ class ConversationSettingsDialog(QDialog):
 
     def _on_provider_changed(self, index: int):
         """Populate model combo when provider changes."""
+        current_model = self.model_combo.currentText().strip()
+        current_summary_model = (
+            self.summary_model_combo.currentText().strip() if hasattr(self, "summary_model_combo") else ""
+        )
+        current_opt_model = (
+            self.prompt_optimizer_model_combo.currentText().strip() if hasattr(self, "prompt_optimizer_model_combo") else ""
+        )
+
         self.model_combo.clear()
+        if hasattr(self, "summary_model_combo"):
+            self.summary_model_combo.clear()
+        if hasattr(self, "prompt_optimizer_model_combo"):
+            self.prompt_optimizer_model_combo.clear()
+
         if 0 <= index < len(self._providers):
             provider = self._providers[index]
             for model in provider.models:
                 self.model_combo.addItem(model)
-            if provider.default_model:
+                if hasattr(self, "summary_model_combo"):
+                    self.summary_model_combo.addItem(model)
+                if hasattr(self, "prompt_optimizer_model_combo"):
+                    self.prompt_optimizer_model_combo.addItem(model)
+
+            if current_model:
+                self.model_combo.setCurrentText(current_model)
+            elif provider.default_model:
                 idx = self.model_combo.findText(provider.default_model)
                 if idx >= 0:
                     self.model_combo.setCurrentIndex(idx)
                 else:
                     self.model_combo.setCurrentText(provider.default_model)
+
+            if hasattr(self, "summary_model_combo"):
+                if current_summary_model:
+                    self.summary_model_combo.setCurrentText(current_summary_model)
+                elif provider.default_model:
+                    self.summary_model_combo.setCurrentText(provider.default_model)
+
+            if hasattr(self, "prompt_optimizer_model_combo"):
+                if current_opt_model:
+                    self.prompt_optimizer_model_combo.setCurrentText(current_opt_model)
+                elif provider.default_model:
+                    self.prompt_optimizer_model_combo.setCurrentText(provider.default_model)

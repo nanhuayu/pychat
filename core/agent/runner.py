@@ -14,6 +14,8 @@ from core.agent.task import AgentTask
 from core.tools.base import ToolContext
 from core.condense.condenser import ContextCondenser
 from core.llm.token_utils import estimate_conversation_tokens
+from core.state.services.summary_service import SummaryService
+from core.state.services.compression_service import CompressionService, CompressionPolicy
 
 class AgentRunner:
     """
@@ -47,46 +49,23 @@ class AgentRunner:
         Check token count and condense conversation if needed.
         Also triggers per-message condensation for recent heavy messages.
         """
-        # 1. Per-message condensation (More aggressive now)
-        # We look at recent messages to condense tool outputs and long assistant responses
-        
-        messages = conversation.messages
-        # Only check last 20 messages to save time, but exclude the very last one (current)
-        start_idx = max(0, len(messages) - 20)
-        end_idx = max(0, len(messages) - 1) 
-        
-        for i in range(end_idx - 1, start_idx - 1, -1):
-            msg = messages[i]
-            if msg.summary:
-                continue
-                
-            should_condense = False
-            
-            # Condense Tool Results (often verbose)
-            if msg.role == "tool":
-                # Always condense tool results unless very short
-                if msg.content and len(msg.content) > 200:
-                    should_condense = True
-            
-            # Condense Assistant Responses if long
-            elif msg.role == "assistant":
-                if msg.content and len(msg.content) > 800:
-                    should_condense = True
-            
-            if should_condense:
-                # Async condensation
-                await self.condenser.condense_message(msg, provider)
+        # Centralized compression policy (single source of truth)
+        policy = CompressionPolicy(
+            per_message_lookback=20,
+            tool_min_chars=200,
+            assistant_min_chars=800,
+            max_active_messages=20,
+            token_threshold_ratio=0.7,
+            keep_last_n=10,
+        )
 
-        # 2. Global condensation (Context Window)
-        current_tokens = estimate_conversation_tokens(conversation)
-        
-        active_messages_count = len([m for m in conversation.messages if not m.condense_parent and not m.truncation_parent and m.role != "system"])
-
-        threshold = self.context_window_limit * 0.7 
-        
-        if active_messages_count > 20 or current_tokens > threshold:
-            print(f"[AgentRunner] Triggering safety condensation. Active msgs: {active_messages_count}, Tokens: {current_tokens}")
-            await self.condenser.condense(conversation, provider, keep_last_n=10)
+        await CompressionService.manage(
+            conversation=conversation,
+            provider=provider,
+            llm_client=self.client,
+            context_window_limit=self.context_window_limit,
+            policy=policy,
+        )
 
     async def run_task(
         self,
@@ -179,12 +158,8 @@ class AgentRunner:
             if not response_msg.tool_calls:
                 if on_update:
                     on_update("Agent finished (no tool calls).")
-                await self.condenser.summarize_last_session(conversation, provider)
-                active_messages_count = len(
-                    [m for m in conversation.messages if not m.condense_parent and not m.truncation_parent and m.role != "system"]
-                )
-                if active_messages_count > 12:
-                    await self.condenser.condense(conversation, provider, keep_last_n=10)
+                # Final context maintenance using state-driven archive (no summary-message insertion)
+                await self._manage_context(conversation, provider)
                 task.status = "completed"
                 self._save_task(task)
                 break
@@ -221,10 +196,18 @@ class AgentRunner:
                 # Use conversation's work_dir if available, otherwise default to manager's root
                 work_dir = getattr(conversation, "work_dir", None) or self.mcp_manager._workspace_root
                 
+                # Use conversation's state dict (will be synced back after tool execution)
+                # Inject current seq_id for state tracking
+                state_dict = conversation._state_dict.copy()
+                state_dict['_current_seq'] = conversation.current_seq_id()
+                
                 context = ToolContext(
                     work_dir=work_dir,
                     approval_callback=approval_callback,
-                    state=task.state
+                    state=state_dict,
+                    llm_client=self.client,
+                    conversation=conversation,
+                    provider=provider
                 )
                 
                 try:
@@ -237,6 +220,12 @@ class AgentRunner:
                             context=context
                         )
                         consecutive_mistake_count = 0
+                        
+                        # Sync state back to conversation (tool may have updated it)
+                        # Remove internal keys before syncing
+                        synced_state = {k: v for k, v in context.state.items() if not k.startswith('_')}
+                        conversation._state_dict.update(synced_state)
+                        
                 except Exception as e:
                     result_str = f"Error executing tool {func_name}: {str(e)}"
                     consecutive_mistake_count += 1
@@ -258,12 +247,13 @@ class AgentRunner:
                 self._save_task(task)
                 break
 
-            # 5. Append Tool Outputs
+            # 5. Append Tool Outputs with seq_id and state snapshot
             for output in tool_outputs:
                 msg = Message(
                     role="tool",
                     content=output["content"],
                     tool_call_id=output["tool_call_id"],
+                    seq_id=conversation.next_seq_id()  # Assign seq_id
                 )
                 msg.name = output["name"]
                 
@@ -272,6 +262,12 @@ class AgentRunner:
 
                 conversation.add_message(msg)
                 task.add_history(output)
+            
+            # 6. Attach state snapshot to the last tool message (rollback checkpoint)
+            if tool_outputs and conversation.messages:
+                last_tool_msg = conversation.messages[-1]
+                if last_tool_msg.role == "tool":
+                    last_tool_msg.state_snapshot = conversation._state_dict.copy()
             
             self._save_task(task)
             

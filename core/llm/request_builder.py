@@ -6,49 +6,25 @@ from typing import Any, Dict, List, Optional
 from models.conversation import Conversation, Message
 from models.provider import Provider
 from core.prompts.system import PromptManager
+from core.prompts.history import get_effective_history, apply_context_window
 
 from utils.image_encoding import encode_image_file_to_data_url
 
 
 def select_base_messages(conversation: Conversation) -> List[Message]:
-    work_dir = getattr(conversation, "work_dir", ".")
-    prompt_manager = PromptManager(work_dir)
-    
     # Get effective history (filters condensed/truncated messages)
-    messages = prompt_manager.get_effective_history(conversation.messages)
+    messages = get_effective_history(conversation.messages)
     
     settings = conversation.settings or {}
     max_ctx = settings.get("max_context_messages")
     if isinstance(max_ctx, int) and max_ctx > 0:
-        return prompt_manager.apply_context_window(messages, max_ctx)
+        return apply_context_window(messages, max_ctx)
                 
     return messages
 
 
 def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict[str, Any]]:
     api_messages: List[Dict[str, Any]] = []
-
-    def normalize_text_content(value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            return str(value)
-        stripped = value.strip()
-        if not stripped:
-            return None
-        return value
-
-    def normalize_tool_result(value: Any) -> str:
-        if value is None:
-            return "(empty tool result)"
-        if isinstance(value, str):
-            if not value.strip():
-                return "(empty tool result)"
-            return value
-        text = str(value)
-        if not text.strip():
-            return "(empty tool result)"
-        return text
 
     tool_result_by_id: Dict[str, str] = {}
     for m in messages:
@@ -57,7 +33,8 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
         if not m.tool_call_id:
             continue
         content = m.summary if m.summary else m.content
-        content = normalize_tool_result(content)
+        if content is None:
+            content = ""
         if m.tool_call_id not in tool_result_by_id:
             tool_result_by_id[m.tool_call_id] = content
 
@@ -90,8 +67,7 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
         else:
             # Use summary if available
             content = msg.summary if msg.summary else msg.content
-            normalized = normalize_text_content(content)
-            message_payload = {"role": msg.role, "content": normalized}
+            message_payload = {"role": msg.role, "content": content}
 
         if msg.tool_calls and msg.role == "assistant":
             tool_calls_with_results: List[Dict[str, Any]] = []
@@ -106,7 +82,6 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
                     result = tool_result_by_id.get(tc_id)
                 if result is None:
                     continue
-                result = normalize_tool_result(result)
 
                 clean_tc = {k: v for k, v in tc.items() if k in ("id", "type", "function")}
                 tool_calls_with_results.append(
@@ -118,13 +93,10 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
                 )
 
             if tool_calls_with_results:
-                first_content = message_payload.get("content")
-                if isinstance(first_content, str) and not first_content.strip():
-                    first_content = None
                 for i, tc in enumerate(tool_calls_with_results):
                     assistant_payload: Dict[str, Any] = {
                         "role": "assistant",
-                        "content": first_content if i == 0 else None,
+                        "content": message_payload.get("content") if i == 0 else None,
                         "tool_calls": [tc["clean"]],
                     }
 
@@ -146,8 +118,6 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
             key = msg.metadata.get("thinking_key") or "reasoning_content"
             message_payload[key] = msg.thinking
 
-        if isinstance(message_payload.get("content"), str) and not message_payload["content"] and not msg.tool_calls:
-            continue
         api_messages.append(message_payload)
 
     return api_messages
@@ -166,26 +136,17 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
         stream_enabled = bool(stream_enabled)
     except Exception:
         stream_enabled = True
+    # System prompt selection
+    system_prompt_override = (settings or {}).get("system_prompt_override")
+    if isinstance(system_prompt_override, str) and system_prompt_override.strip():
+        system_prompt_content = system_prompt_override.strip()
+    else:
+        # Use PromptManager to generate the system prompt
+        work_dir = getattr(conversation, "work_dir", ".")
+        prompt_manager = PromptManager(work_dir)
 
-    if isinstance(temperature, str):
-        try:
-            temperature = float(temperature)
-        except Exception:
-            temperature = 0.7
-    if not isinstance(temperature, (int, float)):
-        temperature = 0.7
-    temperature = float(temperature)
-    if temperature < 0.0:
-        temperature = 0.0
-    if temperature > 2.0:
-        temperature = 2.0
-    
-    # Use PromptManager to generate the system prompt
-    work_dir = getattr(conversation, "work_dir", ".")
-    prompt_manager = PromptManager(work_dir)
-    
-    # Generate structured system prompt
-    system_prompt_content = prompt_manager.get_system_prompt(conversation, tools or [], provider)
+        # Generate structured system prompt
+        system_prompt_content = prompt_manager.get_system_prompt(conversation, tools or [], provider)
     
     # Inject into api_messages
     # 1. Find existing system message (from effective history)
@@ -231,20 +192,5 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
             if k in protected or k in body:
                 continue
             body[k] = v
-
-    thinking_enabled = False
-    if body.get("reasoning_effort"):
-        thinking_enabled = True
-    thinking_cfg = body.get("thinking")
-    if isinstance(thinking_cfg, dict):
-        if thinking_cfg.get("enabled") is True:
-            thinking_enabled = True
-        if str(thinking_cfg.get("type") or "").lower() in ("enabled", "on", "true"):
-            thinking_enabled = True
-    model_name = str(body.get("model") or "")
-    if "thinking" in model_name.lower():
-        thinking_enabled = True
-    if thinking_enabled:
-        body["temperature"] = 1.0
 
     return body

@@ -22,10 +22,19 @@ class ToolResult:
 
 class ToolContext:
     """Context passed to tool execution."""
-    def __init__(self, work_dir: str, approval_callback: Optional[Callable[[str], bool]] = None, state: Optional[Dict[str, Any]] = None):
+    def __init__(self, 
+                 work_dir: str, 
+                 approval_callback: Optional[Callable[[str], bool]] = None, 
+                 state: Optional[Dict[str, Any]] = None,
+                 llm_client: Any = None,
+                 conversation: Any = None,
+                 provider: Any = None):
         self.work_dir = work_dir
         self.approval_callback = approval_callback
         self.state = state if state is not None else {}
+        self.llm_client = llm_client
+        self.conversation = conversation
+        self.provider = provider
 
     async def ask_approval(self, message: str) -> bool:
         if self.approval_callback:

@@ -17,10 +17,20 @@ def select_base_messages(conversation: Conversation) -> List[Message]:
     # Get effective history (filters condensed/truncated messages)
     messages = prompt_manager.get_effective_history(conversation.messages)
     
+    # Apply max_context_messages if set
+    # Note: We should ideally preserve the summary if it exists, even if max_ctx cuts it off.
+    # For now, we apply simple slicing to the result, which might lose the summary if the window is too small.
+    # A better approach would be to slice only the messages *after* the summary.
     settings = conversation.settings or {}
     max_ctx = settings.get("max_context_messages")
     if isinstance(max_ctx, int) and max_ctx > 0:
-        return prompt_manager.apply_context_window(messages, max_ctx)
+        if len(messages) > max_ctx:
+             # Ensure we keep the system prompt if it's first
+            if messages and messages[0].role == "system":
+                # System prompt + last (max_ctx-1) messages
+                return [messages[0]] + messages[-(max_ctx-1):]
+            else:
+                return messages[-max_ctx:]
                 
     return messages
 
@@ -28,41 +38,17 @@ def select_base_messages(conversation: Conversation) -> List[Message]:
 def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict[str, Any]]:
     api_messages: List[Dict[str, Any]] = []
 
-    def normalize_text_content(value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            return str(value)
-        stripped = value.strip()
-        if not stripped:
-            return None
-        return value
-
-    def normalize_tool_result(value: Any) -> str:
-        if value is None:
-            return "(empty tool result)"
-        if isinstance(value, str):
-            if not value.strip():
-                return "(empty tool result)"
-            return value
-        text = str(value)
-        if not text.strip():
-            return "(empty tool result)"
-        return text
-
-    tool_result_by_id: Dict[str, str] = {}
-    for m in messages:
-        if m.role != "tool":
-            continue
-        if not m.tool_call_id:
-            continue
-        content = m.summary if m.summary else m.content
-        content = normalize_tool_result(content)
-        if m.tool_call_id not in tool_result_by_id:
-            tool_result_by_id[m.tool_call_id] = content
-
     for msg in messages:
         if msg.role == "tool":
+            # message for tool result
+            # Use summary if available
+            content = msg.summary if msg.summary else msg.content
+            
+            api_messages.append({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": content
+            })
             continue
 
         if msg.images and provider.supports_vision:
@@ -90,65 +76,37 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
         else:
             # Use summary if available
             content = msg.summary if msg.summary else msg.content
-            normalized = normalize_text_content(content)
-            message_payload = {"role": msg.role, "content": normalized}
+            message_payload = {"role": msg.role, "content": content}
 
-        if msg.tool_calls and msg.role == "assistant":
-            tool_calls_with_results: List[Dict[str, Any]] = []
+        # Add tool_calls if present (assistant role)
+        if msg.tool_calls:
+            # Create a clean copy of tool_calls for the API (exclude 'result' field)
+            clean_tool_calls = []
             for tc in msg.tool_calls:
-                if not isinstance(tc, dict):
-                    continue
-                tc_id = tc.get("id")
-                if not tc_id:
-                    continue
-                result = tc.get("result")
-                if result is None:
-                    result = tool_result_by_id.get(tc_id)
-                if result is None:
-                    continue
-                result = normalize_tool_result(result)
+                clean_tc = {k: v for k, v in tc.items() if k in ('id', 'type', 'function')}
+                clean_tool_calls.append(clean_tc)
+            
+            message_payload["tool_calls"] = clean_tool_calls
+            if not message_payload["content"]:
+                message_payload["content"] = None
 
-                clean_tc = {k: v for k, v in tc.items() if k in ("id", "type", "function")}
-                tool_calls_with_results.append(
-                    {
-                        "clean": clean_tc,
-                        "result": result,
-                        "id": tc_id,
-                    }
-                )
-
-            if tool_calls_with_results:
-                first_content = message_payload.get("content")
-                if isinstance(first_content, str) and not first_content.strip():
-                    first_content = None
-                for i, tc in enumerate(tool_calls_with_results):
-                    assistant_payload: Dict[str, Any] = {
-                        "role": "assistant",
-                        "content": first_content if i == 0 else None,
-                        "tool_calls": [tc["clean"]],
-                    }
-
-                    if msg.thinking and i == 0:
-                        key = msg.metadata.get("thinking_key") or "reasoning_content"
-                        assistant_payload[key] = msg.thinking
-
-                    api_messages.append(assistant_payload)
-                    api_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": tc["result"],
-                        }
-                    )
-                continue
-
+        # Add reasoning_content if present (required by DeepSeek R1 and similar models)
         if msg.role == "assistant" and msg.thinking:
+            # Check metadata for original key, default to standard 'reasoning_content'
             key = msg.metadata.get("thinking_key") or "reasoning_content"
             message_payload[key] = msg.thinking
-
-        if isinstance(message_payload.get("content"), str) and not message_payload["content"] and not msg.tool_calls:
-            continue
+        
         api_messages.append(message_payload)
+
+        # Expand tool results into separate messages
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                if 'result' in tc:
+                    api_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get('id'),
+                        "content": tc.get('result')
+                    })
 
     return api_messages
 
@@ -166,19 +124,6 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
         stream_enabled = bool(stream_enabled)
     except Exception:
         stream_enabled = True
-
-    if isinstance(temperature, str):
-        try:
-            temperature = float(temperature)
-        except Exception:
-            temperature = 0.7
-    if not isinstance(temperature, (int, float)):
-        temperature = 0.7
-    temperature = float(temperature)
-    if temperature < 0.0:
-        temperature = 0.0
-    if temperature > 2.0:
-        temperature = 2.0
     
     # Use PromptManager to generate the system prompt
     work_dir = getattr(conversation, "work_dir", ".")
@@ -231,20 +176,5 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
             if k in protected or k in body:
                 continue
             body[k] = v
-
-    thinking_enabled = False
-    if body.get("reasoning_effort"):
-        thinking_enabled = True
-    thinking_cfg = body.get("thinking")
-    if isinstance(thinking_cfg, dict):
-        if thinking_cfg.get("enabled") is True:
-            thinking_enabled = True
-        if str(thinking_cfg.get("type") or "").lower() in ("enabled", "on", "true"):
-            thinking_enabled = True
-    model_name = str(body.get("model") or "")
-    if "thinking" in model_name.lower():
-        thinking_enabled = True
-    if thinking_enabled:
-        body["temperature"] = 1.0
 
     return body

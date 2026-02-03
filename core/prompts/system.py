@@ -74,9 +74,29 @@ You have access to a set of tools to explore the codebase, read files, edit file
                 last_summary_index = i
                 break
         
+        def is_active(m: Message) -> bool:
+            return not m.condense_parent and not m.truncation_parent
+
+        def sanitize_tool_orphans(seq: List[Message]) -> List[Message]:
+            sanitized: List[Message] = []
+            for m in seq:
+                if m.role == "tool":
+                    prev = sanitized[-1] if sanitized else None
+                    if not prev or prev.role != "assistant":
+                        sanitized.append(
+                            Message(
+                                role="user",
+                                content=f"Tool Output (Context Lost):\n{m.content}",
+                                tool_call_id=m.tool_call_id,
+                            )
+                        )
+                        continue
+                sanitized.append(m)
+            return sanitized
+
         if last_summary_index == -1:
-            # No summary, return all active messages
-            return [m for m in messages if not m.condense_parent and not m.truncation_parent]
+            active = [m for m in messages if is_active(m)]
+            return sanitize_tool_orphans(active)
             
         # If summary exists, return [Summary, ...Active Messages after Summary]
         # We also need to keep the System Prompt (usually index 0)
@@ -91,24 +111,48 @@ You have access to a set of tools to explore the codebase, read files, edit file
         effective_history.append(messages[last_summary_index])
         
         # 3. Active messages AFTER summary
+        tail_active: List[Message] = []
         for i in range(last_summary_index + 1, len(messages)):
             msg = messages[i]
-            if not msg.condense_parent and not msg.truncation_parent:
-                
-                # Sanitize orphan tools here too (for main chat loop)
-                if msg.role == "tool":
-                    prev = effective_history[-1] if effective_history else None
-                    if not prev or prev.role != "assistant":
-                        # Orphan tool in effective history
-                        # We must convert to user to avoid 400
-                        sanitized_msg = Message(
-                            role="user",
-                            content=f"Tool Output (Context Lost):\n{msg.content}",
-                            tool_call_id=msg.tool_call_id
-                        )
-                        effective_history.append(sanitized_msg)
-                        continue
-                        
-                effective_history.append(msg)
+            if is_active(msg):
+                tail_active.append(msg)
+
+        effective_history.extend(sanitize_tool_orphans(tail_active))
                 
         return effective_history
+
+    def apply_context_window(self, messages: List[Message], max_messages: int) -> List[Message]:
+        if max_messages <= 0 or len(messages) <= max_messages:
+            return messages
+
+        pinned: List[Message] = []
+        start = 0
+        if messages and messages[0].role == "system":
+            pinned.append(messages[0])
+            start = 1
+
+        summary_index = -1
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].metadata.get("is_summary"):
+                summary_index = i
+                break
+
+        rest = messages[start:]
+        if summary_index >= 0:
+            summary_msg = messages[summary_index]
+            if summary_msg not in pinned:
+                pinned.append(summary_msg)
+            rest = [m for m in rest if m is not summary_msg]
+
+        budget = max_messages - len(pinned)
+        if budget <= 0:
+            return pinned[:max_messages]
+
+        if len(rest) <= budget:
+            return pinned + rest
+
+        tail_start = len(rest) - budget
+        while tail_start > 0 and rest[tail_start].role == "tool":
+            tail_start -= 1
+
+        return pinned + rest[tail_start:]

@@ -30,6 +30,7 @@ from models.provider import Provider
 from models.streaming import ConversationStreamState
 from core.llm.client import LLMClient
 from core.agent.runner import AgentRunner
+from core.condense.condenser import ContextCondenser
 
 
 class StreamManager(QObject):
@@ -107,6 +108,9 @@ class StreamManager(QObject):
 
         client = self._client
         mcp_manager = client.mcp_manager
+        mode = str(mode or "chat").strip().lower()
+        if mode != "agent":
+            enable_mcp = False
 
         def run_async() -> None:
             try:
@@ -130,6 +134,9 @@ class StreamManager(QObject):
                                 conversation=conversation_snapshot,
                                 task_description=f"Task for conversation {conversation_id}",
                                 max_turns=20,
+                                enable_thinking=bool(enable_thinking),
+                                enable_search=bool(enable_search),
+                                enable_mcp=bool(enable_mcp),
                                 on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
                                 on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
                                 on_step=lambda m: self._raw_step.emit(conversation_id, request_id, m),
@@ -150,31 +157,12 @@ class StreamManager(QObject):
                     task_result = loop.run_until_complete(run_agent())
                     
                     if task_result.status == "completed":
-                        # In Agent mode, request a final summary from the agent
-                        # This serves as the "session compression" or "summary"
-                        try:
-                            summary_instruction = Message(
-                                role="user", 
-                                content="任务已完成。请生成一份简明扼要的会话总结（Session Summary），概述已完成的工作和当前状态。"
-                            )
-                            conversation_snapshot.messages.append(summary_instruction)
-                            
-                            async def fetch_summary():
-                                return await client.send_message(
-                                    provider,
-                                    conversation_snapshot,
-                                    on_token=lambda t: self._raw_token.emit(conversation_id, request_id, t),
-                                    on_thinking=lambda t: self._raw_thinking.emit(conversation_id, request_id, t),
-                                    enable_search=False,
-                                    enable_mcp=False # No tools for summary
-                                )
-                            
-                            summary_msg = loop.run_until_complete(fetch_summary())
-                            self._raw_complete.emit(conversation_id, request_id, summary_msg)
-                            
-                        except Exception as e:
-                            # If summary fails, just emit None
-                             self._raw_complete.emit(conversation_id, request_id, None)
+                        final_msg: Optional[Message] = None
+                        for m in reversed(conversation_snapshot.messages):
+                            if m.role == "assistant" and not m.tool_calls:
+                                final_msg = m
+                                break
+                        self._raw_complete.emit(conversation_id, request_id, final_msg)
 
                     elif task_result.status == "cancelled":
                         self._raw_error.emit(conversation_id, request_id, "任务已取消")
@@ -187,6 +175,7 @@ class StreamManager(QObject):
                     turns = 0
                     current_conversation = conversation_snapshot
                     final_response: Optional[Message] = None
+                    condenser = ContextCondenser(client)
 
                     async def chat_step() -> Message:
                         return await client.send_message(
@@ -216,7 +205,7 @@ class StreamManager(QObject):
 
                         if msg.tool_calls:
                             self._raw_step.emit(conversation_id, request_id, msg)
-                            current_conversation.messages.append(msg)
+                            current_conversation.add_message(msg)
                             
                             for tc in msg.tool_calls:
                                 if state.cancel_event.is_set():
@@ -247,9 +236,21 @@ class StreamManager(QObject):
                                     approval_callback=ui_approval_callback
                                 )
                                 
-                                result_text = loop.run_until_complete(
-                                    mcp_manager.execute_tool_with_context(tool_name, tool_args, context)
-                                )
+                                allowed = False
+                                if isinstance(tool_name, str) and tool_name:
+                                    if tool_name == "builtin_web_search":
+                                        allowed = bool(enable_search)
+                                    elif tool_name.startswith("mcp__"):
+                                        allowed = bool(enable_mcp)
+                                    else:
+                                        allowed = bool(enable_mcp)
+
+                                if not allowed:
+                                    result_text = f"Tool disabled: {tool_name}"
+                                else:
+                                    result_text = loop.run_until_complete(
+                                        mcp_manager.execute_tool_with_context(tool_name, tool_args, context)
+                                    )
                                 
                                 tool_msg = Message(
                                     role="tool",
@@ -259,11 +260,30 @@ class StreamManager(QObject):
                                 )
                                 
                                 self._raw_step.emit(conversation_id, request_id, tool_msg)
-                                current_conversation.messages.append(tool_msg)
+                                current_conversation.add_message(tool_msg)
                                 
                             turns += 1
                             continue
                         else:
+                            current_conversation.add_message(msg)
+                            try:
+                                loop.run_until_complete(condenser.summarize_last_session(current_conversation, provider))
+                            except Exception:
+                                pass
+                            try:
+                                active_count = len(
+                                    [
+                                        m
+                                        for m in current_conversation.messages
+                                        if not m.condense_parent
+                                        and not m.truncation_parent
+                                        and m.role != "system"
+                                    ]
+                                )
+                                if active_count > 12:
+                                    loop.run_until_complete(condenser.condense(current_conversation, provider, keep_last_n=10))
+                            except Exception:
+                                pass
                             final_response = msg
                             break
 

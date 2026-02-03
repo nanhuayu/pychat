@@ -95,7 +95,7 @@ class LLMClient:
 
             if True or debug_log_path:
                 try:
-                    open(f"debug_request_{time.time()}.json", "w", encoding="utf-8").write(
+                    open(f"debug_request_{int(time.time())}.json", "w", encoding="utf-8").write(
                         json.dumps(request_body, ensure_ascii=False, indent=2)
                     )
                 except Exception:

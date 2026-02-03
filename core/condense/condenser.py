@@ -1,6 +1,4 @@
-import asyncio
-from typing import List, Optional, Tuple, Set
-import time
+from typing import List, Optional
 
 from models.conversation import Conversation, Message
 from models.provider import Provider
@@ -16,6 +14,69 @@ class ContextCondenser:
     def __init__(self, client: LLMClient):
         self.client = client
 
+    def _find_last_summary_index(self, messages: List[Message]) -> int:
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].metadata.get("is_summary"):
+                return i
+        return -1
+
+    def _find_last_user_index(self, messages: List[Message], before_index: int) -> int:
+        for i in range(min(before_index, len(messages) - 1), -1, -1):
+            m = messages[i]
+            if m.role == "user" and not m.metadata.get("is_summary"):
+                return i
+        return -1
+
+    def _build_transcript(self, messages: List[Message]) -> str:
+        lines: List[str] = []
+        for m in messages:
+            if m.role == "system":
+                continue
+
+            role = m.role.upper()
+            content = m.summary if m.summary else m.content
+            if content is None:
+                content = ""
+
+            block = f"{role}:\n{content}".strip()
+
+            if m.role == "assistant" and m.tool_calls:
+                tool_lines: List[str] = []
+                for tc in m.tool_calls:
+                    fn = (tc.get("function") or {}).get("name")
+                    args = (tc.get("function") or {}).get("arguments")
+                    result = tc.get("result")
+                    tool_lines.append(
+                        f"- tool_call id={tc.get('id')} name={fn} args={args} result={result}"
+                    )
+                if tool_lines:
+                    block = f"{block}\n\nTOOL_CALLS:\n" + "\n".join(tool_lines)
+
+            lines.append(block)
+
+        return "\n\n---\n\n".join(lines).strip()
+
+    def _count_active(self, messages: List[Message], start: int, end: int) -> int:
+        count = 0
+        for i in range(max(0, start), min(len(messages), end)):
+            m = messages[i]
+            if m.role == "system":
+                continue
+            if m.condense_parent or m.truncation_parent:
+                continue
+            count += 1
+        return count
+
+    def _find_last_active_index(self, messages: List[Message]) -> int:
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.role == "system":
+                continue
+            if m.condense_parent or m.truncation_parent:
+                continue
+            return i
+        return -1
+
     async def condense_message(self, 
                                message: Message, 
                                provider: Provider) -> bool:
@@ -23,7 +84,7 @@ class ContextCondenser:
         Generates a concise summary for a single message and stores it in message.summary.
         This is useful for Agent Mode where output can be very large.
         """
-        if not message.content or len(message.content) < 200: # Lower threshold
+        if not message.content or len(message.content) < 200:
             return False
             
         # Check if already summarized
@@ -32,18 +93,18 @@ class ContextCondenser:
 
         print(f"[Condenser] Summarizing message {message.id[:8]}...")
         
-        prompt = f"""Please provide a concise summary of the following message content. 
+        prompt = f"""Please provide a concise summary of the following message content.
 Focus on the key actions taken, results obtained, or decisions made.
-Keep it under 200 words.
+Keep it under 10000 words.
 
 Content:
-{message.content[:5000]} # Limit input to avoid huge costs
+{message.content}
 """
         
         summary_conv = Conversation(
             id="temp_msg_summary",
             messages=[Message(role="user", content=prompt)],
-            model=None, # Use provider default
+            model=None,
             mode="chat"
         )
         
@@ -63,10 +124,79 @@ Content:
         except Exception as e:
             print(f"[Condenser] Failed to summarize message: {e}")
             return False
-    async def condense(self, 
-                       conversation: Conversation, 
-                       provider: Provider, 
-                       keep_last_n: int = 5) -> bool:
+    async def summarize_last_session(self, conversation: Conversation, provider: Provider) -> bool:
+        messages = conversation.messages
+        if not messages:
+            return False
+
+        end_index = -1
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.role == "assistant" and not m.tool_calls:
+                end_index = i
+                break
+
+        if end_index < 0:
+            return False
+
+        end_msg = messages[end_index]
+        if end_msg.summary:
+            return False
+
+        start_index = self._find_last_user_index(messages, end_index - 1)
+        if start_index < 0:
+            return False
+
+        session_messages = messages[start_index : end_index + 1]
+        has_tools = any(m.role == "assistant" and m.tool_calls for m in session_messages) or any(
+            m.role == "tool" for m in session_messages
+        )
+        total_chars = sum(len((m.content or "")) for m in session_messages)
+        if not has_tools and total_chars < 1200:
+            return False
+
+        transcript = self._build_transcript(session_messages)
+        if not transcript:
+            return False
+
+        prompt = f"""请为下面这段完整会话生成一份可用于后续上下文的精炼总结。
+要求：
+1) 只总结事实与结论，不要虚构；
+2) 包含：目标/需求、关键操作与结果、涉及的文件或命令（如有）、当前状态与未完成事项（如有）；
+3) 尽量短（建议 200-400 中文字），但要信息密度高。
+
+会话内容：
+{transcript}
+"""
+
+        summary_conv = Conversation(
+            id="temp_session_summary",
+            messages=[Message(role="user", content=prompt)],
+            model=None,
+            mode="chat",
+        )
+
+        try:
+            response_msg = await self.client.send_message(
+                provider,
+                summary_conv,
+                enable_thinking=False,
+                enable_search=False,
+                enable_mcp=False,
+            )
+            end_msg.summary = response_msg.content
+            end_msg.metadata["has_session_summary"] = True
+            return True
+        except Exception as e:
+            print(f"[Condenser] Failed to summarize session: {e}")
+            return False
+
+    async def condense(
+        self,
+        conversation: Conversation,
+        provider: Provider,
+        keep_last_n: int = 5,
+    ) -> bool:
         """
         Condenses the conversation history.
         
@@ -79,37 +209,52 @@ Content:
             True if condensation occurred, False otherwise.
         """
         messages = conversation.messages
-        
-        # We need to find messages that are NOT already condensed or truncated
-        # But wait, conversation.messages contains ALL messages (history).
-        # We need to calculate the "Effective History" first to know what to summarize?
-        # Actually, we usually summarize everything up to the keep_last_n point that isn't already summarized.
-        
-        # Find the last summary message index
-        last_summary_index = -1
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].metadata.get("is_summary"):
-                last_summary_index = i
-                break
-        
-        # Calculate range to summarize
-        # Start from last_summary_index + 1 (or 1 if no summary, skipping System at 0)
+        if not messages:
+            return False
+
+        last_summary_index = self._find_last_summary_index(messages)
+
         start_index = last_summary_index + 1
-        if start_index == 0:
-            start_index = 1 # Skip system prompt
-            
-        # End index: leave keep_last_n messages
-        end_index = len(messages) - keep_last_n
-        
-        # Safety check: Ensure we don't split an Assistant-Tool pair.
-        # If the first message we keep (at end_index) is a 'tool' message,
-        # it means its parent 'assistant' message might be in the summarized part.
-        # We must expand the "kept" section backwards to include the parent assistant message.
-        while end_index > start_index and end_index < len(messages):
-            if messages[end_index].role == "tool":
-                end_index -= 1
-            else:
+        if start_index <= 0:
+            start_index = 1
+
+        active_count = 0
+        keep_start = len(messages)
+        for i in range(len(messages) - 1, start_index - 1, -1):
+            m = messages[i]
+            if m.role == "system":
+                continue
+            if m.condense_parent or m.truncation_parent:
+                continue
+            active_count += 1
+            if active_count >= keep_last_n:
+                keep_start = i
                 break
+
+        if keep_start >= len(messages):
+            return False
+
+        while keep_start > start_index and messages[keep_start].role == "tool":
+            keep_start -= 1
+
+        last_active_index = self._find_last_active_index(messages)
+        if last_active_index >= 0:
+            last_active = messages[last_active_index]
+            if last_active.role == "assistant" and not last_active.tool_calls:
+                last_session_start = self._find_last_user_index(messages, last_active_index - 1)
+                if last_session_start >= start_index:
+                    if self._count_active(messages, last_session_start, len(messages)) <= keep_last_n:
+                        keep_start = last_session_start
+                        while True:
+                            prev_session_start = self._find_last_user_index(messages, keep_start - 1)
+                            if prev_session_start < start_index:
+                                break
+                            if self._count_active(messages, prev_session_start, len(messages)) <= keep_last_n:
+                                keep_start = prev_session_start
+                                continue
+                            break
+
+        end_index = keep_start
         
         if start_index >= end_index:
             return False # Nothing to summarize
@@ -120,68 +265,25 @@ Content:
 
         print(f"[Condenser] Summarizing {len(messages_to_summarize)} messages (Indices {start_index} to {end_index})...")
 
-        # Create a temporary conversation for the summarizer
-        # We include the previous summary context if it exists? 
-        # Roo Code says: "Get messages to summarize (all messages since the last summary)"
-        # So we just summarize the new delta.
-        # BUT, the new summary needs to incorporate the old summary?
-        # Roo Code's prompt implies it summarizes the *conversation*.
-        # Actually, if we use "Fresh Start", the new summary replaces everything.
-        # So we should probably provide the previous summary + new messages to the summarizer?
-        # Yes, otherwise we lose the past.
-        
-        summary_context = []
+        previous_summary = ""
         if last_summary_index >= 0:
-            summary_context.append(messages[last_summary_index])
-        
-        # Sanitize messages_to_summarize to avoid orphan tools at the start
-        # If the first message is a tool, it's an orphan (because parent is either in previous summary or missing)
-        # We convert it to user message to avoid 400 error.
-        
-        sanitized_messages = []
-        for i, m in enumerate(messages_to_summarize):
-            if i == 0 and m.role == "tool":
-                # Orphan tool at start of summarization block
-                # Check if summary_context has a parent? 
-                # summary_context[0] is the old summary (role=user).
-                # So this tool IS definitely an orphan in the eyes of the API.
-                print(f"[Condenser] Sanitizing orphan tool message at start of summary block: {m.id}")
-                sanitized_msg = Message(
-                    role="user",
-                    content=f"Tool Output (Context Lost):\n{m.content}",
-                    tool_call_id=m.tool_call_id
-                )
-                sanitized_messages.append(sanitized_msg)
-            else:
-                # Also handle consecutive orphan tools if the first one was orphan?
-                # Actually, if we sanitized the first one, the second one might be valid if it was also a tool?
-                # No, if we have [Tool1, Tool2], and Tool1 is orphan.
-                # If we convert Tool1 to User.
-                # Tool2 follows User. That is also invalid (Tool must follow Assistant).
-                # So we must convert consecutive tools too.
-                
-                if m.role == "tool":
-                    # Check previous message in THIS list or summary_context
-                    prev = sanitized_messages[-1] if sanitized_messages else (summary_context[-1] if summary_context else None)
-                    if prev and prev.role != "assistant":
-                         print(f"[Condenser] Sanitizing orphan tool message: {m.id}")
-                         sanitized_msg = Message(
-                            role="user",
-                            content=f"Tool Output (Context Lost):\n{m.content}",
-                            tool_call_id=m.tool_call_id
-                        )
-                         sanitized_messages.append(sanitized_msg)
-                         continue
-                
-                sanitized_messages.append(m)
+            previous_summary = messages[last_summary_index].content or ""
 
-        summary_context.extend(sanitized_messages)
-        
+        transcript = self._build_transcript(messages_to_summarize)
+        prompt = f"""{SUMMARY_PROMPT}
+
+## Previous Summary (if any)
+{previous_summary}
+
+## New Conversation Delta
+{transcript}
+"""
+
         summary_conv = Conversation(
             id="temp_summary",
-            messages=summary_context + [Message(role="user", content=SUMMARY_PROMPT)],
+            messages=[Message(role="user", content=prompt)],
             model=conversation.model,
-            mode="chat"
+            mode="chat",
         )
 
         try:

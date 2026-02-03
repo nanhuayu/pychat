@@ -80,18 +80,12 @@ class AgentRunner:
         # 2. Global condensation (Context Window)
         current_tokens = estimate_conversation_tokens(conversation)
         
-        # User requirement: Keep default ~10 messages. 
-        # We also check token limit as a safety net.
-        # But primarily we trigger if message count is high.
-        
-        message_count_threshold = 15 # Allow some buffer over 10
-        active_messages_count = len([m for m in conversation.messages if not m.condense_parent and not m.truncation_parent])
-        
+        active_messages_count = len([m for m in conversation.messages if not m.condense_parent and not m.truncation_parent and m.role != "system"])
+
         threshold = self.context_window_limit * 0.7 
         
-        if active_messages_count > message_count_threshold or current_tokens > threshold:
-            print(f"[AgentRunner] Triggering condensation. Active msgs: {active_messages_count}, Tokens: {current_tokens}")
-            # Keep last 10 messages as requested
+        if active_messages_count > 20 or current_tokens > threshold:
+            print(f"[AgentRunner] Triggering safety condensation. Active msgs: {active_messages_count}, Tokens: {current_tokens}")
             await self.condenser.condense(conversation, provider, keep_last_n=10)
 
     async def run_task(
@@ -100,6 +94,9 @@ class AgentRunner:
         conversation: Conversation,
         task_description: str,
         max_turns: int = 20,
+        enable_thinking: bool = True,
+        enable_search: bool = True,
+        enable_mcp: bool = True,
         on_update: Optional[Callable[[str], None]] = None,
         on_token: Optional[Callable[[str], None]] = None,
         on_thinking: Optional[Callable[[str], None]] = None,
@@ -157,9 +154,9 @@ class AgentRunner:
                 response_msg = await self.client.send_message(
                     provider=provider,
                     conversation=conversation,
-                    enable_thinking=True,
-                    enable_search=True,
-                    enable_mcp=True,
+                    enable_thinking=bool(enable_thinking),
+                    enable_search=bool(enable_search),
+                    enable_mcp=bool(enable_mcp),
                     on_token=on_token,
                     on_thinking=on_thinking,
                     cancel_event=cancel_event
@@ -182,6 +179,12 @@ class AgentRunner:
             if not response_msg.tool_calls:
                 if on_update:
                     on_update("Agent finished (no tool calls).")
+                await self.condenser.summarize_last_session(conversation, provider)
+                active_messages_count = len(
+                    [m for m in conversation.messages if not m.condense_parent and not m.truncation_parent and m.role != "system"]
+                )
+                if active_messages_count > 12:
+                    await self.condenser.condense(conversation, provider, keep_last_n=10)
                 task.status = "completed"
                 self._save_task(task)
                 break
@@ -205,6 +208,15 @@ class AgentRunner:
                 except json.JSONDecodeError:
                     args = {}
 
+                allowed = False
+                if isinstance(func_name, str) and func_name:
+                    if func_name == "builtin_web_search":
+                        allowed = bool(enable_search)
+                    elif func_name.startswith("mcp__"):
+                        allowed = bool(enable_mcp)
+                    else:
+                        allowed = bool(enable_mcp)
+
                 # Context with shared state
                 # Use conversation's work_dir if available, otherwise default to manager's root
                 work_dir = getattr(conversation, "work_dir", None) or self.mcp_manager._workspace_root
@@ -216,12 +228,15 @@ class AgentRunner:
                 )
                 
                 try:
-                    result_str = await self.mcp_manager.execute_tool_with_context(
-                        tool_name=func_name,
-                        arguments=args,
-                        context=context
-                    )
-                    consecutive_mistake_count = 0 # Reset on success
+                    if not allowed:
+                        result_str = f"Tool disabled: {func_name}"
+                    else:
+                        result_str = await self.mcp_manager.execute_tool_with_context(
+                            tool_name=func_name,
+                            arguments=args,
+                            context=context
+                        )
+                        consecutive_mistake_count = 0
                 except Exception as e:
                     result_str = f"Error executing tool {func_name}: {str(e)}"
                     consecutive_mistake_count += 1
@@ -255,7 +270,7 @@ class AgentRunner:
                 if on_step:
                     on_step(msg)
 
-                conversation.messages.append(msg)
+                conversation.add_message(msg)
                 task.add_history(output)
             
             self._save_task(task)

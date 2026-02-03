@@ -381,6 +381,7 @@ class InputArea(QWidget):
         self.mode_combo.addItems(["Chat", "Agent"])
         self.mode_combo.setToolTip("选择对话模式")
         self.mode_combo.setMinimumWidth(70)
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         toolbar.addWidget(self.mode_combo)
         
         # Thinking toggle
@@ -437,6 +438,7 @@ class InputArea(QWidget):
         
         wrapper_layout.addLayout(toolbar)
         layout.addWidget(input_wrapper)
+        self._on_mode_changed(self.mode_combo.currentText())
 
     
     def set_streaming_state(self, is_streaming: bool):
@@ -516,6 +518,15 @@ class InputArea(QWidget):
         if self._suppress_thinking_signal:
             return
         self.show_thinking_changed.emit(bool(checked))
+
+    def _on_mode_changed(self, mode_text: str):
+        is_agent = str(mode_text or "").strip().lower() == "agent"
+        self.mcp_toggle.setEnabled(is_agent)
+        desired = is_agent
+        if self.mcp_toggle.isChecked() != desired:
+            self.mcp_toggle.setChecked(desired)
+        if not is_agent:
+            self._mcp_enabled = False
     
     def _on_mcp_toggled(self, checked: bool):
         self._mcp_enabled = checked

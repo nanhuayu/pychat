@@ -127,14 +127,17 @@ class McpManager:
             # Identify tool type by name prefix or registry metadata
             is_mcp = name.startswith("mcp__")
             is_search = name == "builtin_web_search"
+            is_system = not is_mcp and not is_search
             
             if is_mcp and not include_mcp:
                 continue
             if is_search and not include_search:
                 continue
+            if is_system and not include_mcp:
+                continue
                 
             filtered_schemas.append(schema)
-            
+
         return filtered_schemas
 
     async def _refresh_mcp_tools(self):

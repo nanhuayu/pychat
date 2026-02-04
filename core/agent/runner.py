@@ -260,20 +260,23 @@ class AgentRunner:
                     tool_call_id=output["tool_call_id"],
                     seq_id=conversation.next_seq_id()  # Assign seq_id
                 )
-                msg.name = output["name"]
+                try:
+                    msg.metadata = msg.metadata or {}
+                    msg.metadata["name"] = output["name"]
+                except Exception:
+                    pass
+                # Carry updated state to the main thread so persistence/UI can sync.
+                try:
+                    msg.state_snapshot = dict(getattr(conversation, "_state_dict", {}) or {})
+                except Exception:
+                    msg.state_snapshot = None
                 
                 if on_step:
                     on_step(msg)
 
                 conversation.add_message(msg)
                 task.add_history(output)
-            
-            # 6. Attach state snapshot to the last tool message (rollback checkpoint)
-            if tool_outputs and conversation.messages:
-                last_tool_msg = conversation.messages[-1]
-                if last_tool_msg.role == "tool":
-                    last_tool_msg.state_snapshot = conversation._state_dict.copy()
-            
+
             self._save_task(task)
             
         return task

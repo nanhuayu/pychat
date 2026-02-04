@@ -315,6 +315,43 @@ StatsPanel, #stats_panel {
     border-left: 1px solid #2a2a2a;
 }
 
+QScrollArea#stats_scroll {
+    background-color: transparent;
+}
+
+QScrollArea#stats_scroll QWidget {
+    background-color: transparent;
+}
+
+#new_task_edit {
+    background-color: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    color: #e0e0e0;
+}
+
+#new_task_edit:focus {
+    border-color: #6366f1;
+}
+
+QFrame#task_card {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+QToolButton#task_done_btn,
+QToolButton#task_delete_btn,
+QToolButton#add_task_btn {
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #e0e0e0;
+}
+
+QToolButton#task_done_btn:hover,
+QToolButton#task_delete_btn:hover,
+QToolButton#add_task_btn:hover {
+    background-color: rgba(255, 255, 255, 0.14);
+}
+
 QLabel#stats_title {
     color: #e0e0e0;
 }

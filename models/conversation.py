@@ -289,6 +289,18 @@ class Conversation:
                 for tc in msg.tool_calls:
                     if tc.get('id') == message.tool_call_id:
                         tc['result'] = message.content
+                        # If the tool execution updated SessionState, apply it immediately.
+                        # This keeps UI panels (e.g., tasks) consistent even when tool messages are merged.
+                        if message.state_snapshot and isinstance(message.state_snapshot, dict):
+                            try:
+                                self._state_dict = message.state_snapshot.copy()
+                            except Exception:
+                                pass
+                            # Attach checkpoint for rollback on the triggering assistant message.
+                            try:
+                                msg.state_snapshot = message.state_snapshot
+                            except Exception:
+                                pass
                         self.updated_at = datetime.now()
                         return True
         return False

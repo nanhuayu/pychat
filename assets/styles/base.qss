@@ -319,9 +319,32 @@ QPushButton#image_remove_btn {
 }
 
 /* Stats Panel */
+QScrollArea#stats_scroll {
+    border: none;
+}
+
+QWidget#stats_scroll_content {
+    background: transparent;
+}
+
 QLabel#stats_title {
     font-size: 13px;
     font-weight: 600;
+}
+
+QLineEdit#new_task_edit {
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    min-height: 22px;
+}
+
+QFrame#task_card {
+    border-radius: 6px;
+}
+
+QLabel#task_text {
+    font-size: 11px;
 }
 
 QLabel#stats_subtitle {

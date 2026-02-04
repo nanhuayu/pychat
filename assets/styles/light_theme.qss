@@ -317,6 +317,35 @@ StatsPanel, #stats_panel {
     border-left: 1px solid #e0e0e0;
 }
 
+#new_task_edit {
+    background-color: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    color: #1f1f1f;
+}
+
+#new_task_edit:focus {
+    border-color: #5b5fc7;
+}
+
+QFrame#task_card {
+    background-color: rgba(0, 0, 0, 0.03);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+QToolButton#task_done_btn,
+QToolButton#task_delete_btn,
+QToolButton#add_task_btn {
+    background-color: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.10);
+    color: #1f1f1f;
+}
+
+QToolButton#task_done_btn:hover,
+QToolButton#task_delete_btn:hover,
+QToolButton#add_task_btn:hover {
+    background-color: rgba(0, 0, 0, 0.08);
+}
+
 QLabel#stats_title {
     color: #1f1f1f;
 }
@@ -586,9 +615,13 @@ QLabel#editor_role_label {
     color: #666666;
 }
 
-QScrollArea {
-    background-color: transparent;
-    border: none;
+QScrollArea#stats_scroll {
+     background-color: transparent;
+}
+
+QScrollArea#stats_scroll QWidget {
+     background-color: transparent;
+}
 }
 
 /* ============ Settings Dialog ============ */

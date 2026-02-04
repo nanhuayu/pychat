@@ -246,9 +246,26 @@ class StreamManager(QObject):
                                     # In future, emit signal to UI to ask user
                                     return False
                                 
+                                # Provide a shared mutable state dict so tools like manage_state can
+                                # update the conversation's SessionState.
+                                state_dict = {}
+                                try:
+                                    state_dict = dict(getattr(current_conversation, "_state_dict", {}) or {})
+                                except Exception:
+                                    state_dict = {}
+                                # Inject internal key for state tools (not persisted)
+                                try:
+                                    state_dict["_current_seq"] = int(getattr(current_conversation, "_seq_counter", 0) or 0)
+                                except Exception:
+                                    state_dict["_current_seq"] = 0
+
                                 context = ToolContext(
                                     work_dir=work_dir or ".",
-                                    approval_callback=ui_approval_callback
+                                    approval_callback=ui_approval_callback,
+                                    state=state_dict,
+                                    llm_client=client,
+                                    conversation=current_conversation,
+                                    provider=provider,
                                 )
 
                                 # Enforce tool toggles:
@@ -273,12 +290,25 @@ class StreamManager(QObject):
                                         mcp_manager.execute_tool_with_context(tool_name, tool_args, context)
                                     )
                                 
+                                # Sync updated state back to the conversation snapshot.
+                                try:
+                                    synced_state = {k: v for k, v in (context.state or {}).items() if not str(k).startswith('_')}
+                                    if synced_state:
+                                        getattr(current_conversation, "_state_dict", {}).update(synced_state)
+                                except Exception:
+                                    pass
+
                                 tool_msg = Message(
                                     role="tool",
                                     content=str(result_text),
                                     tool_call_id=tool_call_id,
                                     metadata={"name": tool_name}
                                 )
+                                # Attach updated state snapshot so main-thread persistence can apply it.
+                                try:
+                                    tool_msg.state_snapshot = dict(getattr(current_conversation, "_state_dict", {}) or {})
+                                except Exception:
+                                    tool_msg.state_snapshot = None
                                 
                                 self._raw_step.emit(conversation_id, request_id, tool_msg)
                                 current_conversation.messages.append(tool_msg)

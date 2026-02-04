@@ -15,13 +15,11 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QMessageBox,
     QTabWidget,
-    QListWidget,
-    QListWidgetItem,
-    QSplitter,
     QGroupBox,
     QFormLayout,
     QLineEdit,
     QInputDialog,
+    QComboBox,
 )
 
 from core.config import get_user_modes_json_path, load_user_modes_dict, save_user_modes_dict
@@ -78,13 +76,13 @@ def _normalize_modes_payload(obj: Any) -> Tuple[Optional[List[Dict[str, Any]]], 
 
 
 class ModesPage(QWidget):
-    """Global modes & per-mode prompts editor.
+    """Global modes editor.
 
     Stores configuration in APPDATA/PyChat/modes.json (user-wide), not per-workspace.
     """
 
     page_emoji = "🧩"
-    page_title = "模式 & 提示词"
+    page_title = "模式配置"
 
     def __init__(self, _work_dir_unused: str | None = None, parent=None):
         super().__init__(parent)
@@ -99,7 +97,7 @@ class ModesPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        layout.addWidget(QLabel("<h2>模式 & 提示词</h2>"))
+        layout.addWidget(QLabel("<h2>模式配置</h2>"))
 
         path = get_user_modes_json_path()
         self.path_label = QLabel(f"全局配置文件：{path}")
@@ -134,36 +132,29 @@ class ModesPage(QWidget):
         visual_layout.setContentsMargins(0, 0, 0, 0)
         visual_layout.setSpacing(8)
 
-        split = QSplitter(Qt.Orientation.Horizontal)
-        visual_layout.addWidget(split, 1)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
+        header_row.addWidget(QLabel("当前模式"))
 
-        self.mode_list = QListWidget()
-        self.mode_list.setObjectName("settings_modes_list")
-        self.mode_list.currentRowChanged.connect(self._on_mode_selected)
-        left_layout.addWidget(self.mode_list, 1)
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("settings_modes_combo")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_selected)
+        self.mode_combo.setMinimumWidth(220)
+        header_row.addWidget(self.mode_combo, 1)
 
-        left_buttons = QHBoxLayout()
         btn_add = QPushButton("新增")
         btn_add.clicked.connect(self._add_mode)
-        left_buttons.addWidget(btn_add)
+        header_row.addWidget(btn_add)
 
         btn_del = QPushButton("删除")
         btn_del.setProperty("danger", True)
         btn_del.clicked.connect(self._delete_mode)
-        left_buttons.addWidget(btn_del)
+        header_row.addWidget(btn_del)
 
-        left_buttons.addStretch()
-        left_layout.addLayout(left_buttons)
+        visual_layout.addLayout(header_row)
 
-        split.addWidget(left)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
+        right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
 
@@ -211,9 +202,7 @@ class ModesPage(QWidget):
         right_layout.addWidget(hint)
         right_layout.addStretch(1)
 
-        split.addWidget(right)
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 3)
+        visual_layout.addLayout(right_layout, 1)
 
         self.tabs.addTab(visual, "可视化")
 
@@ -260,21 +249,30 @@ class ModesPage(QWidget):
             modes = [_mode_to_json(m) for m in mm.list_modes()]
 
         self._modes = list(modes)
-        self._rebuild_list()
+        self._rebuild_combo()
         self._sync_json_from_visual()
 
-        if self.mode_list.count() > 0:
-            self.mode_list.setCurrentRow(0)
+        if self.mode_combo.count() > 0:
+            self.mode_combo.setCurrentIndex(0)
 
-    def _rebuild_list(self) -> None:
-        self.mode_list.blockSignals(True)
-        self.mode_list.clear()
+    def _rebuild_combo(self) -> None:
+        cur_slug = ""
+        if 0 <= self._current_index < len(self._modes):
+            cur_slug = str(self._modes[self._current_index].get("slug") or "")
+
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.clear()
         for m in self._modes:
             slug = str(m.get("slug") or "")
             name = str(m.get("name") or slug)
-            it = QListWidgetItem(f"{name}  ({slug})")
-            self.mode_list.addItem(it)
-        self.mode_list.blockSignals(False)
+            self.mode_combo.addItem(f"{name} ({slug})", slug)
+        self.mode_combo.blockSignals(False)
+
+        # restore selection
+        if cur_slug:
+            idx = self.mode_combo.findData(cur_slug)
+            if idx >= 0:
+                self.mode_combo.setCurrentIndex(idx)
 
     def _on_mode_selected(self, row: int) -> None:
         self._current_index = int(row)
@@ -337,12 +335,13 @@ class ModesPage(QWidget):
         m["roleDefinition"] = (self.role_edit.toPlainText() or "").strip()
         m["customInstructions"] = (self.custom_edit.toPlainText() or "").strip()
 
+        # Update combo display text
         slug = str(m.get("slug") or "")
         name = str(m.get("name") or slug)
-        try:
-            self.mode_list.item(self._current_index).setText(f"{name}  ({slug})")
-        except Exception:
-            pass
+        if 0 <= self._current_index < self.mode_combo.count():
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setItemText(self._current_index, f"{name} ({slug})")
+            self.mode_combo.blockSignals(False)
 
     def _add_mode(self) -> None:
         slug, ok = QInputDialog.getText(self, "新增模式", "请输入 slug（例如：architect）")
@@ -365,8 +364,8 @@ class ModesPage(QWidget):
                 "groups": [],
             }
         )
-        self._rebuild_list()
-        self.mode_list.setCurrentRow(len(self._modes) - 1)
+        self._rebuild_combo()
+        self.mode_combo.setCurrentIndex(len(self._modes) - 1)
         self._sync_json_from_visual()
 
     def _delete_mode(self) -> None:
@@ -380,9 +379,9 @@ class ModesPage(QWidget):
             return
         del self._modes[self._current_index]
         self._current_index = -1
-        self._rebuild_list()
-        if self.mode_list.count() > 0:
-            self.mode_list.setCurrentRow(0)
+        self._rebuild_combo()
+        if self.mode_combo.count() > 0:
+            self.mode_combo.setCurrentIndex(0)
         self._sync_json_from_visual()
 
     def _sync_json_from_visual(self) -> None:
@@ -406,9 +405,9 @@ class ModesPage(QWidget):
             return
 
         self._modes = list(modes or [])
-        self._rebuild_list()
-        if self.mode_list.count() > 0:
-            self.mode_list.setCurrentRow(0)
+        self._rebuild_combo()
+        if self.mode_combo.count() > 0:
+            self.mode_combo.setCurrentIndex(0)
 
     # ---------------- Public API ----------------
     def validate(self, raw_json: str) -> bool:
@@ -455,9 +454,9 @@ class ModesPage(QWidget):
         if self.tabs.currentIndex() == 1:
             modes, _err = _normalize_modes_payload(obj)
             self._modes = list(modes or [])
-            self._rebuild_list()
-            if self.mode_list.count() > 0:
-                self.mode_list.setCurrentRow(0)
+            self._rebuild_combo()
+            if self.mode_combo.count() > 0:
+                self.mode_combo.setCurrentIndex(0)
 
         ok = save_user_modes_dict(obj if isinstance(obj, dict) else {"modes": obj})
         if not ok:

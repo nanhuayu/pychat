@@ -26,6 +26,8 @@ from .widgets.sidebar import Sidebar
 from .widgets.chat_view import ChatView
 from .widgets.input_area import InputArea
 from .widgets.stats_panel import StatsPanel
+
+from core.state.services.task_service import TaskService
 from .settings.settings_dialog import SettingsDialog
 from .dialogs.message_editor import MessageEditorDialog
 from .dialogs.conversation_settings_dialog import ConversationSettingsDialog
@@ -122,6 +124,9 @@ class MainWindow(QMainWindow):
 
         # Stats panel
         self.stats_panel = StatsPanel()
+        self.stats_panel.task_create_requested.connect(self._on_task_create_requested)
+        self.stats_panel.task_complete_requested.connect(self._on_task_complete_requested)
+        self.stats_panel.task_delete_requested.connect(self._on_task_delete_requested)
 
         # Splitter
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -364,6 +369,42 @@ class MainWindow(QMainWindow):
         self.chat_view.update_work_dir("")
         self.input_area.set_work_dir("")
         self._sync_input_enabled()
+
+    def _apply_task_ops(self, ops: list[dict]) -> None:
+        if not self.current_conversation:
+            return
+        try:
+            current_seq = self.current_conversation.next_seq_id()
+            state = self.current_conversation.get_state()
+            TaskService.handle_ops(state, ops, current_seq)
+            state.last_updated_seq = current_seq
+            self.current_conversation.set_state(state)
+            self.storage.save_conversation(self.current_conversation)
+        except Exception:
+            return
+
+        try:
+            self.stats_panel.update_stats(self.current_conversation)
+        except Exception:
+            pass
+
+    def _on_task_create_requested(self, content: str) -> None:
+        text = (content or "").strip()
+        if not text:
+            return
+        self._apply_task_ops([{"action": "create", "content": text}])
+
+    def _on_task_complete_requested(self, task_id: str) -> None:
+        tid = (task_id or "").strip()
+        if not tid:
+            return
+        self._apply_task_ops([{"action": "update", "id": tid, "status": "completed"}])
+
+    def _on_task_delete_requested(self, task_id: str) -> None:
+        tid = (task_id or "").strip()
+        if not tid:
+            return
+        self._apply_task_ops([{"action": "delete", "id": tid}])
 
     def _on_input_provider_model_changed(self, provider_id: str, model: str) -> None:
         if bool(getattr(self, '_syncing_input_selection', False)):
@@ -758,6 +799,13 @@ class MainWindow(QMainWindow):
                 else:
                     # Tool result message: just add to view
                     self.chat_view.add_message(message)
+
+                # Tool steps may update SessionState (e.g., manage_state -> tasks).
+                # Refresh right panel immediately to keep it in sync.
+                try:
+                    self.stats_panel.update_stats(self.current_conversation)
+                except Exception:
+                    pass
 
     def _on_response_complete(self, conversation_id: str, request_id: str, response):
         """Handle response completion - called from main thread."""

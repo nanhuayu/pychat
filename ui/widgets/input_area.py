@@ -167,7 +167,8 @@ class MessageTextEdit(QTextEdit):
         try:
             self.mode_combo.blockSignals(True)
             self.mode_combo.clear()
-            self._mode_manager = ModeManager(work_dir or '.')
+            # Modes are global user configuration (APPDATA/PyChat/modes.json), not per-workspace.
+            self._mode_manager = ModeManager(None)
             for m in self._mode_manager.list_modes():
                 self.mode_combo.addItem(m.name, m.slug)
             if cur_slug:
@@ -351,7 +352,7 @@ class InputArea(QWidget):
             pass
 
     def _refresh_modes(self, work_dir: str) -> None:
-        """Reload modes from current work_dir and keep selection if possible."""
+        """Reload modes from global user config and keep selection if possible."""
         try:
             cur_slug = str(self.mode_combo.currentData() or '')
         except Exception:
@@ -360,7 +361,7 @@ class InputArea(QWidget):
         try:
             self.mode_combo.blockSignals(True)
             self.mode_combo.clear()
-            self._mode_manager = ModeManager(work_dir or '.')
+            self._mode_manager = ModeManager(None)
             for m in self._mode_manager.list_modes():
                 self.mode_combo.addItem(m.name, m.slug)
             if cur_slug:

@@ -88,7 +88,7 @@ class ConversationSettingsDialog(QDialog):
         self.mode_combo = QComboBox()
         self.mode_combo.setObjectName("conv_mode")
         try:
-            mm = ModeManager(getattr(conversation, "work_dir", "") or ".")
+            mm = ModeManager(None)
             for m in mm.list_modes():
                 self.mode_combo.addItem(m.name, m.slug)
         except Exception:

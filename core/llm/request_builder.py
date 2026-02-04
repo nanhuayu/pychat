@@ -7,11 +7,12 @@ from models.conversation import Conversation, Message
 from models.provider import Provider
 from core.prompts.system import PromptManager
 from core.prompts.history import get_effective_history, apply_context_window
+from core.config import AppConfig, load_app_config
 
 from utils.image_encoding import encode_image_file_to_data_url
 
 
-def select_base_messages(conversation: Conversation) -> List[Message]:
+def select_base_messages(conversation: Conversation, *, app_config: AppConfig | None = None) -> List[Message]:
     # Get effective history (filters condensed/truncated messages)
     messages = get_effective_history(conversation.messages)
     
@@ -19,6 +20,17 @@ def select_base_messages(conversation: Conversation) -> List[Message]:
     max_ctx = settings.get("max_context_messages")
     if isinstance(max_ctx, int) and max_ctx > 0:
         return apply_context_window(messages, max_ctx)
+
+    cfg = app_config
+    if cfg is None:
+        try:
+            cfg = load_app_config()
+        except Exception:
+            cfg = AppConfig()
+
+    default_max_ctx = int(getattr(getattr(cfg, "context", None), "default_max_context_messages", 0) or 0)
+    if default_max_ctx > 0:
+        return apply_context_window(messages, default_max_ctx)
                 
     return messages
 
@@ -123,7 +135,14 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
     return api_messages
 
 
-def build_request_body(provider: Provider, conversation: Conversation, api_messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+def build_request_body(
+    provider: Provider,
+    conversation: Conversation,
+    api_messages: List[Dict[str, Any]],
+    tools: Optional[List[Dict[str, Any]]] = None,
+    *,
+    app_config: AppConfig | None = None,
+) -> Dict[str, Any]:
     settings = conversation.settings or {}
 
 
@@ -144,9 +163,15 @@ def build_request_body(provider: Provider, conversation: Conversation, api_messa
         # Use PromptManager to generate the system prompt
         work_dir = getattr(conversation, "work_dir", ".")
         prompt_manager = PromptManager(work_dir)
+        cfg = app_config
+        if cfg is None:
+            try:
+                cfg = load_app_config()
+            except Exception:
+                cfg = AppConfig()
 
         # Generate structured system prompt
-        system_prompt_content = prompt_manager.get_system_prompt(conversation, tools or [], provider)
+        system_prompt_content = prompt_manager.get_system_prompt(conversation, tools or [], provider, app_config=cfg)
     
     # Inject into api_messages
     # 1. Find existing system message (from effective history)

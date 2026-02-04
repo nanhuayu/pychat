@@ -396,7 +396,13 @@ class MessageWidget(QFrame):
         
         header.addStretch()
 
-        self._add_action_buttons(header)
+        # Keep action buttons tight and consistent with the nav toolbar.
+        actions_widget = QWidget()
+        actions_layout = QHBoxLayout(actions_widget)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(2)
+        self._add_action_buttons(actions_layout)
+        header.addWidget(actions_widget)
         
         layout.addLayout(header)
 
@@ -466,25 +472,28 @@ class MessageWidget(QFrame):
         copy_btn = QToolButton()
         copy_btn.setText("⧉")
         copy_btn.setToolTip("复制原文")
-        copy_btn.setFixedSize(26, 22)
+        copy_btn.setFixedSize(24, 24)
         copy_btn.setObjectName("msg_copy_btn")
+        copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         copy_btn.clicked.connect(self._copy_original_content)
         self._copy_btn = copy_btn
         layout.addWidget(copy_btn)
         
         edit_btn = QToolButton()
-        edit_btn.setText("🖊")
+        edit_btn.setText("✎")
         edit_btn.setToolTip("编辑")
-        edit_btn.setFixedSize(26, 22)
+        edit_btn.setFixedSize(24, 24)
         edit_btn.setObjectName("msg_edit_btn")
+        edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         edit_btn.clicked.connect(lambda: self.edit_requested.emit(self.message.id))
         layout.addWidget(edit_btn)
 
         delete_btn = QToolButton()
         delete_btn.setText("✕")
         delete_btn.setToolTip("删除")
-        delete_btn.setFixedSize(26, 22)
+        delete_btn.setFixedSize(24, 24)
         delete_btn.setObjectName("msg_delete_btn")
+        delete_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.message.id))
         layout.addWidget(delete_btn)
 

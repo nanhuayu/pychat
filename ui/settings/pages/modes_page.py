@@ -1,0 +1,469 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, List, Optional, Tuple
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import QUrl
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTextEdit,
+    QMessageBox,
+    QTabWidget,
+    QListWidget,
+    QListWidgetItem,
+    QSplitter,
+    QGroupBox,
+    QFormLayout,
+    QLineEdit,
+    QInputDialog,
+)
+
+from core.config import get_user_modes_json_path, load_user_modes_dict, save_user_modes_dict
+from core.modes.manager import ModeManager
+from core.modes.types import ModeConfig, GroupOptions
+
+
+def _mode_to_json(mode: ModeConfig) -> Dict[str, Any]:
+    groups: List[Any] = []
+    for g in mode.groups or []:
+        if isinstance(g, tuple) and len(g) == 2:
+            name = str(g[0])
+            opts = g[1]
+            if isinstance(opts, GroupOptions):
+                groups.append(
+                    [
+                        name,
+                        {
+                            "fileRegex": (opts.file_regex or "") if getattr(opts, "file_regex", None) else "",
+                            "description": (opts.description or "") if getattr(opts, "description", None) else "",
+                        },
+                    ]
+                )
+            else:
+                groups.append(name)
+        else:
+            groups.append(str(g))
+
+    return {
+        "slug": mode.slug,
+        "name": mode.name,
+        "roleDefinition": (mode.role_definition or ""),
+        "whenToUse": mode.when_to_use or "",
+        "description": mode.description or "",
+        "customInstructions": mode.custom_instructions or "",
+        "groups": groups,
+    }
+
+
+def _normalize_modes_payload(obj: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    modes = obj.get("modes") if isinstance(obj, dict) else obj
+    if not isinstance(modes, list):
+        return None, "modes.json 需要是 {\"modes\": [...]} 或者直接是数组"
+
+    out: List[Dict[str, Any]] = []
+    for it in modes:
+        if not isinstance(it, dict):
+            continue
+        slug = str(it.get("slug") or "").strip().lower()
+        if not slug:
+            continue
+        out.append(dict(it))
+    return out, None
+
+
+class ModesPage(QWidget):
+    """Global modes & per-mode prompts editor.
+
+    Stores configuration in APPDATA/PyChat/modes.json (user-wide), not per-workspace.
+    """
+
+    page_emoji = "🧩"
+    page_title = "模式 & 提示词"
+
+    def __init__(self, _work_dir_unused: str | None = None, parent=None):
+        super().__init__(parent)
+        self._modes: List[Dict[str, Any]] = []
+        self._current_index: int = -1
+        self._setup_ui()
+        self.reload_from_disk()
+
+    # ---------------- UI ----------------
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel("<h2>模式 & 提示词</h2>"))
+
+        path = get_user_modes_json_path()
+        self.path_label = QLabel(f"全局配置文件：{path}")
+        self.path_label.setWordWrap(True)
+        self.path_label.setProperty("muted", True)
+        layout.addWidget(self.path_label)
+
+        row = QHBoxLayout()
+        btn_open_dir = QPushButton("打开配置目录")
+        btn_open_dir.clicked.connect(self._open_config_dir)
+        row.addWidget(btn_open_dir)
+
+        btn_reload = QPushButton("重新加载")
+        btn_reload.clicked.connect(self.reload_from_disk)
+        row.addWidget(btn_reload)
+
+        btn_save = QPushButton("写入全局 modes.json")
+        btn_save.setProperty("primary", True)
+        btn_save.clicked.connect(self._save_clicked)
+        row.addWidget(btn_save)
+
+        row.addStretch()
+        layout.addLayout(row)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("settings_modes_tabs")
+        layout.addWidget(self.tabs, 1)
+
+        # ---- Visual tab
+        visual = QWidget()
+        visual_layout = QVBoxLayout(visual)
+        visual_layout.setContentsMargins(0, 0, 0, 0)
+        visual_layout.setSpacing(8)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        visual_layout.addWidget(split, 1)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+
+        self.mode_list = QListWidget()
+        self.mode_list.setObjectName("settings_modes_list")
+        self.mode_list.currentRowChanged.connect(self._on_mode_selected)
+        left_layout.addWidget(self.mode_list, 1)
+
+        left_buttons = QHBoxLayout()
+        btn_add = QPushButton("新增")
+        btn_add.clicked.connect(self._add_mode)
+        left_buttons.addWidget(btn_add)
+
+        btn_del = QPushButton("删除")
+        btn_del.setProperty("danger", True)
+        btn_del.clicked.connect(self._delete_mode)
+        left_buttons.addWidget(btn_del)
+
+        left_buttons.addStretch()
+        left_layout.addLayout(left_buttons)
+
+        split.addWidget(left)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        form_group = QGroupBox("当前模式")
+        form = QFormLayout(form_group)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(6)
+
+        self.slug_edit = QLineEdit()
+        self.slug_edit.setReadOnly(True)
+        form.addRow("Slug", self.slug_edit)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.textChanged.connect(self._apply_current_edits)
+        form.addRow("名称", self.name_edit)
+
+        self.groups_edit = QLineEdit()
+        self.groups_edit.setPlaceholderText("例如：read, mcp, search")
+        self.groups_edit.textChanged.connect(self._apply_current_edits)
+        form.addRow("Groups", self.groups_edit)
+
+        self.role_edit = QTextEdit()
+        self.role_edit.setAcceptRichText(False)
+        self.role_edit.setPlaceholderText("System Prompt / Role Definition（建议每个模式都写清楚职责）")
+        self.role_edit.textChanged.connect(self._apply_current_edits)
+        self.role_edit.setMinimumHeight(160)
+        form.addRow("roleDefinition", self.role_edit)
+
+        self.custom_edit = QTextEdit()
+        self.custom_edit.setAcceptRichText(False)
+        self.custom_edit.setPlaceholderText("附加指令（可选，会附加在 system prompt 的 Custom Instructions 区域）")
+        self.custom_edit.textChanged.connect(self._apply_current_edits)
+        self.custom_edit.setMinimumHeight(90)
+        form.addRow("customInstructions", self.custom_edit)
+
+        right_layout.addWidget(form_group)
+
+        hint = QLabel(
+            "提示：这些提示词是按模式保存的（chat/agent/architect/code…都在这里编辑）。\n"
+            "保存后会立即影响模式下拉框与 system prompt 生成。"
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("muted", True)
+        right_layout.addWidget(hint)
+        right_layout.addStretch(1)
+
+        split.addWidget(right)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 3)
+
+        self.tabs.addTab(visual, "可视化")
+
+        # ---- JSON tab
+        json_tab = QWidget()
+        json_layout = QVBoxLayout(json_tab)
+        json_layout.setContentsMargins(0, 0, 0, 0)
+        json_layout.setSpacing(8)
+
+        json_buttons = QHBoxLayout()
+        btn_from_visual = QPushButton("从可视化生成")
+        btn_from_visual.clicked.connect(self._sync_json_from_visual)
+        json_buttons.addWidget(btn_from_visual)
+
+        btn_apply_json = QPushButton("解析并应用")
+        btn_apply_json.clicked.connect(self._apply_json_to_visual)
+        json_buttons.addWidget(btn_apply_json)
+
+        json_buttons.addStretch()
+        json_layout.addLayout(json_buttons)
+
+        self.json_edit = QTextEdit()
+        self.json_edit.setObjectName("settings_modes_json")
+        self.json_edit.setAcceptRichText(False)
+        self.json_edit.setPlaceholderText("编辑全局 modes.json（{modes:[...]}）")
+        self.json_edit.setMinimumHeight(300)
+        json_layout.addWidget(self.json_edit, 1)
+
+        self.tabs.addTab(json_tab, "JSON")
+
+    # ---------------- Data ----------------
+    def _open_config_dir(self) -> None:
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_user_modes_json_path().parent)))
+        except Exception:
+            pass
+
+    def reload_from_disk(self) -> None:
+        data = load_user_modes_dict()
+        modes, err = _normalize_modes_payload(data) if data else (None, None)
+        if modes is None:
+            # If no user file yet, start from effective modes (built-in defaults).
+            mm = ModeManager(None)
+            modes = [_mode_to_json(m) for m in mm.list_modes()]
+
+        self._modes = list(modes)
+        self._rebuild_list()
+        self._sync_json_from_visual()
+
+        if self.mode_list.count() > 0:
+            self.mode_list.setCurrentRow(0)
+
+    def _rebuild_list(self) -> None:
+        self.mode_list.blockSignals(True)
+        self.mode_list.clear()
+        for m in self._modes:
+            slug = str(m.get("slug") or "")
+            name = str(m.get("name") or slug)
+            it = QListWidgetItem(f"{name}  ({slug})")
+            self.mode_list.addItem(it)
+        self.mode_list.blockSignals(False)
+
+    def _on_mode_selected(self, row: int) -> None:
+        self._current_index = int(row)
+        self._load_current_into_form()
+
+    def _load_current_into_form(self) -> None:
+        if self._current_index < 0 or self._current_index >= len(self._modes):
+            self.slug_edit.setText("")
+            self.name_edit.setText("")
+            self.groups_edit.setText("")
+            self.role_edit.setPlainText("")
+            self.custom_edit.setPlainText("")
+            return
+
+        m = self._modes[self._current_index]
+        self.slug_edit.setText(str(m.get("slug") or ""))
+        self.name_edit.blockSignals(True)
+        self.groups_edit.blockSignals(True)
+        self.role_edit.blockSignals(True)
+        self.custom_edit.blockSignals(True)
+        try:
+            self.name_edit.setText(str(m.get("name") or ""))
+
+            groups = m.get("groups")
+            if isinstance(groups, list):
+                flat: List[str] = []
+                for g in groups:
+                    if isinstance(g, str):
+                        flat.append(g)
+                    elif isinstance(g, list) and g:
+                        flat.append(str(g[0]))
+                self.groups_edit.setText(", ".join([x for x in flat if x]))
+            else:
+                self.groups_edit.setText("")
+
+            self.role_edit.setPlainText(str(m.get("roleDefinition") or ""))
+            self.custom_edit.setPlainText(str(m.get("customInstructions") or ""))
+        finally:
+            self.name_edit.blockSignals(False)
+            self.groups_edit.blockSignals(False)
+            self.role_edit.blockSignals(False)
+            self.custom_edit.blockSignals(False)
+
+    def _apply_current_edits(self) -> None:
+        if self._current_index < 0 or self._current_index >= len(self._modes):
+            return
+
+        m = self._modes[self._current_index]
+        m["name"] = (self.name_edit.text() or "").strip()
+
+        groups_raw = (self.groups_edit.text() or "").strip()
+        groups: List[Any] = []
+        if groups_raw:
+            for part in groups_raw.split(","):
+                g = part.strip()
+                if g:
+                    groups.append(g)
+        m["groups"] = groups
+
+        m["roleDefinition"] = (self.role_edit.toPlainText() or "").strip()
+        m["customInstructions"] = (self.custom_edit.toPlainText() or "").strip()
+
+        slug = str(m.get("slug") or "")
+        name = str(m.get("name") or slug)
+        try:
+            self.mode_list.item(self._current_index).setText(f"{name}  ({slug})")
+        except Exception:
+            pass
+
+    def _add_mode(self) -> None:
+        slug, ok = QInputDialog.getText(self, "新增模式", "请输入 slug（例如：architect）")
+        if not ok:
+            return
+        slug = (slug or "").strip().lower()
+        if not slug:
+            return
+        for m in self._modes:
+            if str(m.get("slug") or "").strip().lower() == slug:
+                QMessageBox.information(self, "已存在", f"slug={slug} 已存在")
+                return
+
+        self._modes.append(
+            {
+                "slug": slug,
+                "name": slug,
+                "roleDefinition": "",
+                "customInstructions": "",
+                "groups": [],
+            }
+        )
+        self._rebuild_list()
+        self.mode_list.setCurrentRow(len(self._modes) - 1)
+        self._sync_json_from_visual()
+
+    def _delete_mode(self) -> None:
+        if self._current_index < 0 or self._current_index >= len(self._modes):
+            return
+        slug = str(self._modes[self._current_index].get("slug") or "")
+        if slug in {"chat", "agent"}:
+            QMessageBox.information(self, "禁止删除", "chat/agent 为基础模式，不建议删除。")
+            return
+        if QMessageBox.question(self, "删除", f"确定删除 {slug}？") != QMessageBox.StandardButton.Yes:
+            return
+        del self._modes[self._current_index]
+        self._current_index = -1
+        self._rebuild_list()
+        if self.mode_list.count() > 0:
+            self.mode_list.setCurrentRow(0)
+        self._sync_json_from_visual()
+
+    def _sync_json_from_visual(self) -> None:
+        payload = {"modes": list(self._modes or [])}
+        self.json_edit.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    def _apply_json_to_visual(self) -> None:
+        raw = (self.json_edit.toPlainText() or "").strip()
+        if not raw:
+            QMessageBox.warning(self, "错误", "JSON 不能为空")
+            return
+        try:
+            obj = json.loads(raw)
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"JSON 解析失败：{e}")
+            return
+
+        modes, err = _normalize_modes_payload(obj)
+        if err:
+            QMessageBox.warning(self, "错误", err)
+            return
+
+        self._modes = list(modes or [])
+        self._rebuild_list()
+        if self.mode_list.count() > 0:
+            self.mode_list.setCurrentRow(0)
+
+    # ---------------- Public API ----------------
+    def validate(self, raw_json: str) -> bool:
+        raw = (raw_json or "").strip()
+        if not raw:
+            QMessageBox.warning(self, "错误", "modes.json 内容不能为空")
+            return False
+        try:
+            obj = json.loads(raw)
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"modes.json 不是合法 JSON：{e}")
+            return False
+
+        modes, err = _normalize_modes_payload(obj)
+        if err:
+            QMessageBox.warning(self, "错误", err)
+            return False
+
+        # ensure base modes exist
+        slugs = {str(m.get("slug") or "").strip().lower() for m in (modes or [])}
+        if "chat" not in slugs:
+            QMessageBox.warning(self, "错误", "modes.json 必须包含 chat 模式")
+            return False
+        return True
+
+    def save_to_disk(self) -> bool:
+        if self.tabs.currentIndex() == 1:
+            # JSON tab: respect manual edits.
+            raw = (self.json_edit.toPlainText() or "").strip()
+        else:
+            # Visual tab: regenerate JSON from current form state.
+            self._sync_json_from_visual()
+            raw = (self.json_edit.toPlainText() or "").strip()
+
+        if not self.validate(raw):
+            return False
+
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return False
+
+        # If saved from JSON, refresh the visual model so UI stays consistent.
+        if self.tabs.currentIndex() == 1:
+            modes, _err = _normalize_modes_payload(obj)
+            self._modes = list(modes or [])
+            self._rebuild_list()
+            if self.mode_list.count() > 0:
+                self.mode_list.setCurrentRow(0)
+
+        ok = save_user_modes_dict(obj if isinstance(obj, dict) else {"modes": obj})
+        if not ok:
+            QMessageBox.warning(self, "错误", "写入全局 modes.json 失败（请检查权限）")
+        return ok
+
+    def _save_clicked(self) -> None:
+        if self.save_to_disk():
+            QMessageBox.information(self, "已保存", "全局模式配置已写入。")

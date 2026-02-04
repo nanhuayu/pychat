@@ -16,6 +16,8 @@ from core.condense.condenser import ContextCondenser
 from core.llm.token_utils import estimate_conversation_tokens
 from core.state.services.summary_service import SummaryService
 from core.state.services.compression_service import CompressionService, CompressionPolicy
+from core.config import load_app_config, AppConfig
+from core.agent.policy import build_compression_policy
 
 class AgentRunner:
     """
@@ -49,15 +51,18 @@ class AgentRunner:
         Check token count and condense conversation if needed.
         Also triggers per-message condensation for recent heavy messages.
         """
-        # Centralized compression policy (single source of truth)
-        policy = CompressionPolicy(
-            per_message_lookback=20,
-            tool_min_chars=200,
-            assistant_min_chars=800,
-            max_active_messages=20,
-            token_threshold_ratio=0.7,
-            keep_last_n=10,
-        )
+        try:
+            cfg = load_app_config()
+        except Exception:
+            cfg = AppConfig()
+
+        try:
+            if not bool(getattr(getattr(cfg, "context", None), "agent_auto_compress_enabled", True)):
+                return
+        except Exception:
+            return
+
+        policy = build_compression_policy(cfg)
 
         await CompressionService.manage(
             conversation=conversation,

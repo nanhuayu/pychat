@@ -529,6 +529,15 @@ class MainWindow(QMainWindow):
         opt_model = (settings.get('prompt_optimizer_model') or '').strip() or base_model
         opt_sys = (settings.get('prompt_optimizer_system_prompt') or '').strip() or None
 
+        if not opt_sys:
+            try:
+                po = self._app_settings.get("prompt_optimizer") or {}
+                templates = po.get("templates") if isinstance(po.get("templates"), dict) else {}
+                sel = (po.get("selected_template") or "default")
+                opt_sys = (templates.get(sel) or "").strip() or None
+            except Exception:
+                opt_sys = None
+
         self.prompt_optimizer.start(
             provider=provider,
             conversation_id=self.current_conversation.id,
@@ -935,7 +944,13 @@ class MainWindow(QMainWindow):
                     break
     
     def _open_settings(self):
-        dialog = SettingsDialog(self.providers, current_settings=self._app_settings, parent=self)
+        work_dir = ""
+        try:
+            work_dir = str(getattr(self.current_conversation, "work_dir", "") or "") if self.current_conversation else ""
+        except Exception:
+            work_dir = ""
+
+        dialog = SettingsDialog(self.providers, current_settings=self._app_settings, parent=self, work_dir=work_dir)
         if dialog.exec():
             self.providers = dialog.get_providers()
             self.storage.save_providers(self.providers)
@@ -947,12 +962,31 @@ class MainWindow(QMainWindow):
             self._app_settings['log_stream'] = dialog.get_log_stream()
             self._app_settings['proxy_url'] = dialog.get_proxy_url()
             self._app_settings.update(dialog.get_auto_approve_settings())
+
+            # New: context defaults + prompt templates
+            try:
+                self._app_settings.update(dialog.get_context_settings())
+            except Exception:
+                pass
+            try:
+                self._app_settings.update(dialog.get_prompt_settings())
+            except Exception:
+                pass
+
             self._apply_proxy()
             
             # Apply updated permissions to McpManager immediately
             self.mcp_manager.update_permissions(self._app_settings)
 
             self.storage.save_settings(self._app_settings)
+
+            # Refresh core-level settings cache (so PromptManager/request builder picks up changes without restart)
+            try:
+                from core.config.app_settings import set_cached_settings
+                set_cached_settings(self._app_settings)
+            except Exception:
+                pass
+
             self.stats_panel.setVisible(self._app_settings['show_stats'])
             self.toggle_stats_action.setChecked(self._app_settings['show_stats'])
             self._apply_theme()

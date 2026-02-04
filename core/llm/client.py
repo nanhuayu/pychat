@@ -20,6 +20,7 @@ from models.conversation import Message, Conversation
 
 from core.llm.thinking_parser import ThinkingStreamParser
 from core.llm.request_builder import select_base_messages, build_api_messages, build_request_body
+from core.config import load_app_config, AppConfig
 from core.llm.http_utils import (
     pretty_json,
     read_response_bytes,
@@ -72,6 +73,11 @@ class LLMClient:
         THINKING_KEYS = ["reasoning_content", "thinking", "reasoning", "thinking_content", "thoughts", "thought"]
 
         try:
+            try:
+                app_config = load_app_config()
+            except Exception:
+                app_config = AppConfig()
+
             # Gather tools if configured
             prepared_query = ""
             try:
@@ -89,9 +95,9 @@ class LLMClient:
                 prepared_queries=[prepared_query] if prepared_query else None,
             )
             
-            base_messages = select_base_messages(conversation)
+            base_messages = select_base_messages(conversation, app_config=app_config)
             api_messages = build_api_messages(base_messages, provider)
-            request_body = build_request_body(provider, conversation, api_messages, tools=tools)
+            request_body = build_request_body(provider, conversation, api_messages, tools=tools, app_config=app_config)
 
             if True or debug_log_path:
                 try:

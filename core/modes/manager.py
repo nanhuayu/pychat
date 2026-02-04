@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from core.config.io import get_user_modes_json_path
 from core.modes.defaults import get_default_modes
 from core.modes.types import GroupOptions, ModeConfig, normalize_mode_slug
 
@@ -16,7 +17,7 @@ class ModeManager:
 
     Design goals:
     - Simple: built-in defaults first
-    - Extensible: optional project-level modes.json in work_dir
+    - Extensible: optional user-level modes.json in APPDATA/PyChat
     """
 
     def __init__(self, work_dir: str | None = None):
@@ -40,11 +41,11 @@ class ModeManager:
 
         modes: Dict[str, ModeConfig] = {m.slug: m for m in get_default_modes()}
 
-        # Optional project override
+        # Optional user override
         try:
-            project_path = Path(self.work_dir) / "modes.json"
-            if project_path.exists() and project_path.is_file():
-                loaded = self._load_modes_json(project_path)
+            user_path = get_user_modes_json_path()
+            if user_path.exists() and user_path.is_file():
+                loaded = self._load_modes_json(user_path, source="global")
                 for m in loaded:
                     modes[m.slug] = m
         except Exception:
@@ -56,7 +57,7 @@ class ModeManager:
 
         self._cache = modes
 
-    def _load_modes_json(self, path: Path) -> List[ModeConfig]:
+    def _load_modes_json(self, path: Path, *, source: str) -> List[ModeConfig]:
         raw = json.loads(path.read_text(encoding="utf-8"))
         items = raw.get("modes") if isinstance(raw, dict) else raw
         if not isinstance(items, list):
@@ -70,7 +71,7 @@ class ModeManager:
             slug = normalize_mode_slug(str(it.get("slug", "")))
             name = str(it.get("name", slug))
             role_definition = str(it.get("roleDefinition") or it.get("role_definition") or "").strip()
-            if not slug or not role_definition:
+            if not slug:
                 continue
 
             groups = it.get("groups") or []
@@ -94,7 +95,7 @@ class ModeManager:
                     description=(it.get("description")),
                     custom_instructions=(it.get("customInstructions") or it.get("custom_instructions")),
                     groups=tuple(parsed_groups),
-                    source="project",
+                    source=source,
                 )
             )
 

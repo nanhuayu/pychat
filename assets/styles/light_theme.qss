@@ -119,6 +119,31 @@ QPushButton#import_btn:hover {
     background-color: #e0e7ff;
 }
 
+/* ============ Settings Dialog ============ */
+#settings_sidebar {
+    background-color: #ffffff;
+    border-right: 1px solid #e0e0e0;
+}
+
+QListWidget#settings_nav {
+    background-color: transparent;
+    border: none;
+}
+
+QListWidget#settings_nav::item {
+    background-color: transparent;
+    color: #1f1f1f;
+}
+
+QListWidget#settings_nav::item:hover {
+    background-color: #f3f4f6;
+}
+
+QListWidget#settings_nav::item:selected {
+    background-color: #e0e7ff;
+    color: #111827;
+}
+
 /* ============ Chat Area ============ */
 #central_widget,
 #main_splitter,

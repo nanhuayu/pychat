@@ -111,7 +111,8 @@ class ChatView(QWidget):
         self.messages_container = QWidget()
         self.messages_container.setObjectName("messages_container")
         self.messages_layout = QVBoxLayout(self.messages_container)
-        self.messages_layout.setContentsMargins(8, 8, 8, 8)
+        # Align list padding with header bar margins for a cleaner vertical rhythm.
+        self.messages_layout.setContentsMargins(10, 10, 10, 10)
         self.messages_layout.setSpacing(6)
         self.messages_layout.addStretch()
         

@@ -13,13 +13,26 @@ QPushButton {
 
 QToolButton {
     border-radius: 4px;
-}
-
-QToolButton#toolbar_btn {
     padding: 2px;
     min-width: 24px;
     min-height: 24px;
     font-size: 13px;
+}
+
+QToolButton#msg_edit_btn,
+QToolButton#msg_copy_btn,
+QToolButton#msg_delete_btn {
+    padding: 1px;
+    min-width: 24px;
+    min-height: 24px;
+    font-size: 12px;
+}
+
+QToolButton#toolbar_btn {
+    padding: 1px;
+    min-width: 24px;
+    min-height: 24px;
+    font-size: 12px;
 }
 
 QComboBox {
@@ -92,6 +105,27 @@ QTableWidget {
 QTextBrowser {
     border: none;
     padding: 0;
+}
+
+/* ============ Settings Dialog ============ */
+#settings_sidebar {
+    padding: 0;
+}
+
+QListWidget#settings_nav {
+    border-radius: 6px;
+}
+
+QListWidget#settings_nav::item {
+    padding: 2px 10px;
+    border-radius: 6px;
+}
+
+/* Slightly denser group boxes inside settings content */
+#settings_content QGroupBox {
+    margin-top: 6px;
+    padding: 2px;
+    padding-top: 14px;
 }
 
 /* ============ Menu ============ */
@@ -235,13 +269,6 @@ QLabel#message_badge {
     font-size: 11px;
     padding: 1px 5px;
     border-radius: 6px;
-}
-
-QToolButton#msg_edit_btn,
-QToolButton#msg_copy_btn,
-QToolButton#msg_delete_btn {
-    border-radius: 4px;
-    font-size: 13px;
 }
 
 /* Chat Header */

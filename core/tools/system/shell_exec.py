@@ -4,6 +4,26 @@ import os
 from typing import Any, Dict
 from core.tools.base import BaseTool, ToolContext, ToolResult
 
+
+def _decode_subprocess_output(data: object) -> str:
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    if not isinstance(data, (bytes, bytearray)):
+        try:
+            return str(data)
+        except Exception:
+            return ""
+
+    raw = bytes(data)
+    for enc in ("utf-8", "utf-8-sig", "gbk", "mbcs"):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            pass
+    return raw.decode("utf-8", errors="replace")
+
 class ExecuteCommandTool(BaseTool):
     def __init__(self):
         super().__init__()
@@ -62,12 +82,12 @@ class ExecuteCommandTool(BaseTool):
                 shell=True,
                 cwd=str(cwd_path),
                 capture_output=True,
-                text=True,
+                text=False,
                 timeout=120 # Default timeout
             )
             
-            stdout = (proc.stdout or "").strip()
-            stderr = (proc.stderr or "").strip()
+            stdout = _decode_subprocess_output(proc.stdout).strip()
+            stderr = _decode_subprocess_output(proc.stderr).strip()
             exit_code = proc.returncode
             
             output_parts = []

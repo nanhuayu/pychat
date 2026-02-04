@@ -1,7 +1,74 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Optional, Set
+
 from core.config.schema import AppConfig
 from core.state.services.compression_service import CompressionPolicy
+
+
+@dataclass(frozen=True)
+class RunPolicy:
+    """Extremely small policy object.
+
+    The goal is to make chat/agent differences purely parameter-driven.
+    """
+
+    # Mode slug (should match `core.modes.types.ModeConfig.slug`).
+    mode: str = "chat"
+    max_turns: int = 10
+    context_window_limit: int = 100000
+    enable_thinking: bool = True
+    enable_search: bool = False
+    enable_mcp: bool = False
+
+    # If provided, tools must be in this allowlist (in addition to enable_search/enable_mcp toggles).
+    tool_allowlist: Optional[Set[str]] = None
+
+    # None means "defer to app_config".
+    auto_compress_enabled: Optional[bool] = None
+
+
+def chat_policy(
+    *,
+    enable_thinking: bool = True,
+    enable_search: bool = False,
+    enable_mcp: bool = False,
+    max_turns: int = 10,
+    context_window_limit: int = 100000,
+    tool_allowlist: Optional[Set[str]] = None,
+) -> RunPolicy:
+    return RunPolicy(
+        mode="chat",
+        max_turns=int(max_turns),
+        context_window_limit=int(context_window_limit),
+        enable_thinking=bool(enable_thinking),
+        enable_search=bool(enable_search),
+        enable_mcp=bool(enable_mcp),
+        tool_allowlist=set(tool_allowlist) if tool_allowlist else None,
+    )
+
+
+def agent_policy(
+    *,
+    enable_thinking: bool = True,
+    enable_search: bool = True,
+    enable_mcp: bool = True,
+    max_turns: int = 20,
+    context_window_limit: int = 100000,
+    tool_allowlist: Optional[Set[str]] = None,
+) -> RunPolicy:
+    # Agent defaults to auto compress unless app_config disables it.
+    return RunPolicy(
+        mode="agent",
+        max_turns=int(max_turns),
+        context_window_limit=int(context_window_limit),
+        enable_thinking=bool(enable_thinking),
+        enable_search=bool(enable_search),
+        enable_mcp=bool(enable_mcp),
+        tool_allowlist=set(tool_allowlist) if tool_allowlist else None,
+        auto_compress_enabled=True,
+    )
 
 
 def build_compression_policy(app_config: AppConfig) -> CompressionPolicy:

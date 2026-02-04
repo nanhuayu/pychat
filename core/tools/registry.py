@@ -85,7 +85,10 @@ class ToolRegistry:
         wrapped_context = ToolContext(
             work_dir=context.work_dir,
             approval_callback=permission_aware_callback,
-            state=context.state
+            state=context.state,
+            llm_client=getattr(context, "llm_client", None),
+            conversation=getattr(context, "conversation", None),
+            provider=getattr(context, "provider", None),
         )
         
         try:

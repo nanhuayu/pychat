@@ -17,6 +17,8 @@ from typing import List, Dict, Any, Optional
 
 from core.modes import ModeManager
 from core.modes.policy import get_mode_feature_policy, clamp_feature_flags
+from core.agent.policy import RunPolicy
+from core.agent.policy_builder import build_run_policy
 
 from ui.utils.image_loader import load_pixmap
 from ui.utils.image_utils import extract_images_from_mime, is_supported_image_path
@@ -730,6 +732,35 @@ class InputArea(QWidget):
             return bool(search), bool(mcp)
         except Exception:
             return bool(self._search_enabled), bool(self._mcp_enabled)
+
+    def build_run_policy(self, *, enable_thinking: Optional[bool] = None) -> RunPolicy:
+        """Build RunPolicy based on selected mode + current toggles.
+
+        Note: The core mapping lives in `core.agent.policy_builder.build_run_policy`
+        (pure core, reusable by future TUI). This method only reads UI state.
+        """
+
+        try:
+            slug = self.get_selected_mode_slug()
+        except Exception:
+            slug = "chat"
+
+        # Tool flags are clamped by mode feature policy.
+        enable_search, enable_mcp = self.get_effective_tool_flags()
+
+        if enable_thinking is None:
+            try:
+                enable_thinking = bool(self.thinking_toggle.isChecked())
+            except Exception:
+                enable_thinking = True
+
+        return build_run_policy(
+            mode_slug=str(slug or "chat"),
+            enable_thinking=bool(enable_thinking),
+            enable_search=bool(enable_search),
+            enable_mcp=bool(enable_mcp),
+            mode_manager=getattr(self, "_mode_manager", None),
+        )
 
     def apply_mode_policy(self, apply_defaults: bool = False) -> None:
         """Public wrapper for applying mode policy.

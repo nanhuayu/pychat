@@ -19,7 +19,7 @@ from services.storage_service import StorageService
 from core.llm.client import LLMClient
 from services.provider_service import ProviderService
 from core.tools.manager import McpManager
-from controllers.stream_manager import StreamManager
+from ui.runtime.message_runtime import MessageRuntime
 from controllers.prompt_optimizer import PromptOptimizer
 
 from .widgets.sidebar import Sidebar
@@ -43,19 +43,19 @@ class MainWindow(QMainWindow):
         self.client = LLMClient()
         self.provider_service = ProviderService()
         self.mcp_manager = McpManager()
-        self.stream_manager = StreamManager(self.client, parent=self)
+        self.message_runtime = MessageRuntime(self.client, mcp_manager=self.mcp_manager, parent=self)
         
         self.providers: list[Provider] = []
         self.current_conversation: Optional[Conversation] = None
         self._app_settings: dict = {}
         self._syncing_input_selection: bool = False
 
-        # Streaming events (thread-safe; StreamManager normalizes + guards request_id)
-        self.stream_manager.token_received.connect(self._on_token_received)
-        self.stream_manager.thinking_received.connect(self._on_thinking_received)
-        self.stream_manager.response_step.connect(self._on_response_step)
-        self.stream_manager.response_complete.connect(self._on_response_complete)
-        self.stream_manager.response_error.connect(self._on_response_error)
+        # Streaming events (thread-safe; runtime normalizes + guards request_id)
+        self.message_runtime.token_received.connect(self._on_token_received)
+        self.message_runtime.thinking_received.connect(self._on_thinking_received)
+        self.message_runtime.response_step.connect(self._on_response_step)
+        self.message_runtime.response_complete.connect(self._on_response_complete)
+        self.message_runtime.response_error.connect(self._on_response_error)
 
         self.prompt_optimizer = PromptOptimizer(self.client, parent=self)
         self.prompt_optimizer.optimize_started.connect(self._on_prompt_optimize_started)
@@ -257,7 +257,7 @@ class MainWindow(QMainWindow):
             if not self.current_conversation:
                 self.input_area.set_streaming_state(False)
                 return
-            is_streaming = self.stream_manager.is_streaming(self.current_conversation.id)
+            is_streaming = self.message_runtime.is_streaming(self.current_conversation.id)
             self.input_area.set_streaming_state(is_streaming)
         except Exception:
             pass
@@ -349,7 +349,7 @@ class MainWindow(QMainWindow):
             self.input_area.set_work_dir(work_dir)
 
             # Restore streaming UI if this conversation is currently generating.
-            stream_state = self.stream_manager.get_state(conversation.id)
+            stream_state = self.message_runtime.get_state(conversation.id)
             if stream_state:
                 self.chat_view.start_streaming_response(model=stream_state.model)
                 self.chat_view.restore_streaming_state(
@@ -540,7 +540,7 @@ class MainWindow(QMainWindow):
         if not self.current_conversation:
             self.current_conversation = Conversation()
 
-        if self.stream_manager.is_streaming(self.current_conversation.id):
+        if self.message_runtime.is_streaming(self.current_conversation.id):
             QMessageBox.information(self, '提示', '当前会话正在生成中，请先停止或等待完成。')
             return
 
@@ -592,7 +592,7 @@ class MainWindow(QMainWindow):
             self.current_conversation = Conversation()
 
         # Per-conversation concurrency: block only if THIS conversation is generating.
-        if self.stream_manager.is_streaming(self.current_conversation.id):
+        if self.message_runtime.is_streaming(self.current_conversation.id):
             QMessageBox.information(self, "提示", "当前会话正在生成中，请稍候或先取消生成。")
             return
         
@@ -668,30 +668,38 @@ class MainWindow(QMainWindow):
 
         enable_thinking = bool((conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True)))
 
-        # Get tool toggles from input area (mode policy already applied)
+        # Build a RunPolicy from the UI (InputArea owns mode->policy mapping).
         try:
-            enable_search, enable_mcp = self.input_area.get_effective_tool_flags()
+            policy = self.input_area.build_run_policy(enable_thinking=enable_thinking)
         except Exception:
-            enable_search = self.input_area.is_search_enabled()
-            enable_mcp = self.input_area.is_mcp_enabled()
-        try:
-            mode = (self.input_area.get_selected_mode_slug() or '').strip().lower()
-        except Exception:
-            mode = self.input_area.get_selected_mode().lower()
+            # Fallback: use the same core policy builder (no UI dependencies).
+            try:
+                from core.agent.policy_builder import build_run_policy
+                from core.modes import ModeManager
+
+                mm = ModeManager(getattr(conversation, "work_dir", None) or None)
+                policy = build_run_policy(
+                    mode_slug=str(getattr(conversation, "mode", "chat") or "chat"),
+                    enable_thinking=bool(enable_thinking),
+                    enable_search=False,
+                    enable_mcp=False,
+                    mode_manager=mm,
+                )
+            except Exception:
+                from core.agent.policy import RunPolicy
+
+                policy = RunPolicy(mode="chat", enable_thinking=bool(enable_thinking))
 
         try:
             if conversation is not None:
-                conversation.mode = mode
+                conversation.mode = str(getattr(policy, 'mode', '') or '') or (conversation.mode or 'chat')
         except Exception:
             pass
 
-        state = self.stream_manager.start(
+        state = self.message_runtime.start(
             provider,
             conversation,
-            enable_thinking=enable_thinking,
-            enable_search=enable_search,
-            enable_mcp=enable_mcp,
-            mode=mode,
+            policy=policy,
             debug_log_path=debug_log_path,
         )
         if not state:
@@ -708,7 +716,7 @@ class MainWindow(QMainWindow):
         if self.current_conversation and self.current_conversation.id == conversation_id:
             # Ensure UI is in streaming mode (e.g. for multi-turn tool use)
             if not self.chat_view.is_streaming():
-                state = self.stream_manager.get_state(conversation_id)
+                state = self.message_runtime.get_state(conversation_id)
                 model = state.model if state else ""
                 self.chat_view.start_streaming_response(model)
 
@@ -719,7 +727,7 @@ class MainWindow(QMainWindow):
         if self.current_conversation and self.current_conversation.id == conversation_id:
             # Ensure UI is in streaming mode
             if not self.chat_view.is_streaming():
-                state = self.stream_manager.get_state(conversation_id)
+                state = self.message_runtime.get_state(conversation_id)
                 model = state.model if state else ""
                 self.chat_view.start_streaming_response(model)
 
@@ -793,7 +801,7 @@ class MainWindow(QMainWindow):
                     # For assistant step messages (with tool_calls), finish streaming and add to view
                     self.chat_view.finish_streaming_response(message, add_to_view=True)
                     # Re-start streaming for next turn (expecting tool results then more generation)
-                    state = self.stream_manager.get_state(conversation_id)
+                    state = self.message_runtime.get_state(conversation_id)
                     if state:
                         self.chat_view.start_streaming_response(model=state.model)
                 else:
@@ -909,7 +917,7 @@ class MainWindow(QMainWindow):
     def _cancel_generation(self):
         if not self.current_conversation:
             return
-        self.stream_manager.cancel(self.current_conversation.id)
+        self.message_runtime.cancel(self.current_conversation.id)
     
     def _edit_message(self, message_id: str):
         if not self.current_conversation:

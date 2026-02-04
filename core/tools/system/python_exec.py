@@ -1,9 +1,30 @@
 import json
 import subprocess
 import sys
+import os
 from typing import Any, Dict
 
 from core.tools.base import BaseTool, ToolContext, ToolResult
+
+
+def _decode_subprocess_output(data: object) -> str:
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    if not isinstance(data, (bytes, bytearray)):
+        try:
+            return str(data)
+        except Exception:
+            return ""
+
+    raw = bytes(data)
+    for enc in ("utf-8", "utf-8-sig", "gbk", "mbcs"):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            pass
+    return raw.decode("utf-8", errors="replace")
 
 class PythonExecTool(BaseTool):
     @property
@@ -52,18 +73,23 @@ class PythonExecTool(BaseTool):
             return ToolResult("User denied execution", is_error=True)
 
         try:
+            env = dict(os.environ or {})
+            # Prefer UTF-8 to reduce mojibake across Windows terminals.
+            env.setdefault("PYTHONUTF8", "1")
+            env.setdefault("PYTHONIOENCODING", "utf-8")
             proc = subprocess.run(
                 [sys.executable, "-c", code],
                 cwd=str(cwd_path),
                 capture_output=True,
-                text=True,
+                text=False,
                 timeout=timeout_sec,
+                env=env,
             )
             return ToolResult(json.dumps(
                 {
                     "exitCode": proc.returncode,
-                    "stdout": (proc.stdout or "").strip(),
-                    "stderr": (proc.stderr or "").strip(),
+                    "stdout": _decode_subprocess_output(proc.stdout).strip(),
+                    "stderr": _decode_subprocess_output(proc.stderr).strip(),
                 },
                 ensure_ascii=False,
                 indent=2,

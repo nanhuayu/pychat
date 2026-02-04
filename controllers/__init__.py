@@ -4,6 +4,6 @@ Controllers/Managers orchestrate application flows between UI widgets and servic
 UI widgets should stay focused on presentation and user interaction.
 """
 
-from .stream_manager import StreamManager
+from .prompt_optimizer import PromptOptimizer
 
-__all__ = ["StreamManager"]
+__all__ = ["PromptOptimizer"]

@@ -192,9 +192,9 @@ class McpManager:
     async def execute_tool_with_context(self, tool_name: str, arguments: dict, context) -> str:
         """
         Delegate execution to Registry.
-        Note: StreamManager calls this.
+        Note: Called by the unified runtime (e.g. MessageEngine via UI runtime).
         """
-        # We need to import ToolContext if 'context' is not typed, but it is passed from StreamManager.
+        # `context` is a ToolContext created by the caller.
         result = await self.registry.execute(tool_name, arguments, context)
         return result.to_string()
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from core.modes.types import ModeConfig
+from core.agent.modes.types import ModeConfig
 
 
 def _group_names(mode: ModeConfig) -> set[str]:

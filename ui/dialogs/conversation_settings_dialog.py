@@ -22,7 +22,7 @@ from typing import List, Optional
 
 from models.conversation import Conversation
 from models.provider import Provider
-from core.modes import ModeManager
+from core.agent.modes import ModeManager
 
 
 class ConversationSettingsDialog(QDialog):

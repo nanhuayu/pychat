@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.modes.types import GroupOptions, ModeConfig
+from core.agent.modes.types import GroupOptions, ModeConfig
 
 
 DEFAULT_MODES: list[ModeConfig] = [

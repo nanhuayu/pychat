@@ -23,8 +23,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config import get_user_modes_json_path, load_user_modes_dict, save_user_modes_dict
-from core.modes.manager import ModeManager
-from core.modes.types import ModeConfig, GroupOptions
+from core.agent.modes.manager import ModeManager
+from core.agent.modes.types import ModeConfig, GroupOptions
 
 
 def _mode_to_json(mode: ModeConfig) -> Dict[str, Any]:

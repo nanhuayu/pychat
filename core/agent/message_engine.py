@@ -186,7 +186,7 @@ class MessageEngine:
         else:
             agent_like = False
             try:
-                from core.modes.manager import ModeManager
+                from core.agent.modes.manager import ModeManager
 
                 mm = ModeManager(getattr(conversation, "work_dir", None) or None)
                 agent_like = bool(mm.get(mode_slug).is_agent_like())

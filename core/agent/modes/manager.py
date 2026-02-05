@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from core.config.io import get_user_modes_json_path
-from core.modes.defaults import get_default_modes
-from core.modes.types import GroupOptions, ModeConfig, normalize_mode_slug
+from core.agent.modes.defaults import get_default_modes
+from core.agent.modes.types import GroupOptions, ModeConfig, normalize_mode_slug
 
 
 class ModeManager:

@@ -675,7 +675,7 @@ class MainWindow(QMainWindow):
             # Fallback: use the same core policy builder (no UI dependencies).
             try:
                 from core.agent.policy_builder import build_run_policy
-                from core.modes import ModeManager
+                from core.agent.modes import ModeManager
 
                 mm = ModeManager(getattr(conversation, "work_dir", None) or None)
                 policy = build_run_policy(

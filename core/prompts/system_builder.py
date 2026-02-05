@@ -9,8 +9,8 @@ from models.provider import Provider
 from utils.file_context import get_file_tree
 
 from core.config.schema import AppConfig
-from core.modes.manager import ModeManager
-from core.modes.types import normalize_mode_slug
+from core.agent.modes.manager import ModeManager
+from core.agent.modes.types import normalize_mode_slug
 
 
 DEFAULT_SYSTEM_PROMPT = (

@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Optional, Protocol
 
 from core.agent.policy import RunPolicy
-from core.modes.runtime_defaults import get_mode_runtime_defaults
-from core.modes.policy import clamp_feature_flags, get_mode_feature_policy
-from core.modes.manager import ModeManager
+from core.agent.modes.runtime_defaults import get_mode_runtime_defaults
+from core.agent.modes.policy import clamp_feature_flags, get_mode_feature_policy
+from core.agent.modes.manager import ModeManager
 
 
 class _ModeConfigProto(Protocol):

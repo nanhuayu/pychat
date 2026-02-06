@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 from core.agent.modes.types import ModeConfig
 
@@ -18,6 +17,13 @@ def _group_names(mode: ModeConfig) -> set[str]:
 
 @dataclass(frozen=True)
 class ModeFeaturePolicy:
+    """Mode-driven feature defaults and constraints.
+
+    This is used by:
+    - UI: enable/disable toggles + compute defaults
+    - policy_builder: derive RunPolicy feature flags
+    """
+
     allow_thinking: bool = True
     allow_mcp: bool = False
     allow_search: bool = False
@@ -35,6 +41,7 @@ def get_mode_feature_policy(mode: ModeConfig) -> ModeFeaturePolicy:
     - group 'search' => web search is allowed and default-on.
     - agent-like modes default thinking on.
     """
+
     groups = _group_names(mode)
 
     # Allow all capabilities in all modes, but use groups to determine defaults.
@@ -63,6 +70,7 @@ def clamp_feature_flags(
     enable_search: bool,
 ) -> tuple[bool, bool, bool]:
     """Clamp user/UI flags by policy (disallowed -> forced False)."""
+
     out_thinking = bool(enable_thinking) if policy.allow_thinking else False
     out_mcp = bool(enable_mcp) if policy.allow_mcp else False
     out_search = bool(enable_search) if policy.allow_search else False

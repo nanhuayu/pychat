@@ -9,7 +9,7 @@ from models.provider import Provider
 from utils.file_context import get_file_tree
 
 from core.config.schema import AppConfig
-from core.agent.modes.manager import ModeManager
+from core.agent.modes.manager import resolve_mode_config
 from core.agent.modes.types import normalize_mode_slug
 
 
@@ -24,14 +24,6 @@ DEFAULT_AGENT_TOOL_GUIDELINES = (
     "- If a tool fails, analyze the error and try a different approach.\n"
     "- Use `manage_state` to track progress when appropriate."
 )
-
-
-def resolve_mode_config(work_dir: str, mode_slug: str):
-    try:
-        mode_manager = ModeManager(None)
-        return mode_manager.get(mode_slug)
-    except Exception:
-        return None
 
 
 def build_environment_section(work_dir: str) -> str:
@@ -71,7 +63,10 @@ def build_system_prompt(
 
     work_dir = getattr(conversation, "work_dir", None) or default_work_dir
 
-    mode_cfg = resolve_mode_config(str(work_dir), mode_slug)
+    try:
+        mode_cfg = resolve_mode_config(mode_slug, work_dir=str(work_dir))
+    except Exception:
+        mode_cfg = None
 
     conv_custom = ((settings.get("system_prompt") or "").strip() or (settings.get("custom_instructions") or "").strip())
 
@@ -79,17 +74,10 @@ def build_system_prompt(
 
     role_def: Optional[str] = None
     mode_custom: Optional[str] = None
-    agent_like = False
 
     if mode_cfg is not None:
         role_def = (mode_cfg.role_definition or "").strip() or None
         mode_custom = (mode_cfg.custom_instructions or "").strip() or None
-        try:
-            agent_like = bool(mode_cfg.is_agent_like())
-        except Exception:
-            agent_like = (mode_slug == "agent")
-    else:
-        agent_like = (mode_slug == "agent")
 
     # System prompt precedence:
     # 1) mode.roleDefinition
@@ -105,14 +93,13 @@ def build_system_prompt(
     else:
         parts.append(DEFAULT_SYSTEM_PROMPT)
 
-    if agent_like:
-        if (prompt_cfg.agent_tool_guidelines or "").strip():
-            parts.append(prompt_cfg.agent_tool_guidelines.strip())
-        else:
-            parts.append(DEFAULT_AGENT_TOOL_GUIDELINES)
+    if (prompt_cfg.agent_tool_guidelines or "").strip():
+        parts.append(prompt_cfg.agent_tool_guidelines.strip())
+    else:
+        parts.append(DEFAULT_AGENT_TOOL_GUIDELINES)
 
-        if bool(prompt_cfg.include_environment):
-            parts.append(build_environment_section(str(work_dir)))
+    if bool(prompt_cfg.include_environment):
+        parts.append(build_environment_section(str(work_dir)))
 
     if bool(prompt_cfg.include_state):
         state_section = build_state_section(conversation)

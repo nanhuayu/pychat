@@ -1,15 +1,8 @@
-from core.agent.modes.manager import ModeManager
-from core.agent.modes.types import ModeConfig
-from core.agent.modes.policy import ModeFeaturePolicy, get_mode_feature_policy, clamp_feature_flags
-from core.agent.modes.runtime_defaults import ModeRuntimeDefaults, get_mode_runtime_defaults
+"""Agent modes package.
 
-__all__ = [
-	"ModeManager",
-	"ModeConfig",
-	"ModeFeaturePolicy",
-	"get_mode_feature_policy",
-	"clamp_feature_flags",
-	"ModeRuntimeDefaults",
-	"get_mode_runtime_defaults",
-]
+Import concrete definitions from explicit submodules, e.g.:
+- `core.agent.modes.manager.ModeManager`
+- `core.agent.modes.types.ModeConfig`
+- `core.agent.modes.features.get_mode_feature_policy`
+"""
 

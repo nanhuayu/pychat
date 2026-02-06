@@ -46,13 +46,13 @@ class ContextPage(QWidget):
 
         layout.addWidget(ctx_group)
 
-        agent_group = QGroupBox("自动压缩（Agent）")
+        agent_group = QGroupBox("自动压缩")
         agent_form = QFormLayout(agent_group)
         agent_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         agent_form.setHorizontalSpacing(10)
         agent_form.setVerticalSpacing(6)
 
-        self.agent_auto_compress_enabled = QCheckBox("启用 Agent 自动压缩")
+        self.agent_auto_compress_enabled = QCheckBox("启用自动压缩")
         self.agent_auto_compress_enabled.setChecked(bool(context.agent_auto_compress_enabled))
         agent_form.addRow("", self.agent_auto_compress_enabled)
 

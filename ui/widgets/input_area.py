@@ -15,8 +15,8 @@ import base64
 import os
 from typing import List, Dict, Any, Optional
 
-from core.agent.modes import ModeManager
-from core.agent.modes.policy import get_mode_feature_policy, clamp_feature_flags
+from core.agent.modes.manager import ModeManager
+from core.agent.modes.features import get_mode_feature_policy, clamp_feature_flags
 from core.agent.policy import RunPolicy
 from core.agent.policy_builder import build_run_policy
 

@@ -174,26 +174,13 @@ class MessageEngine:
         except Exception:
             cfg_enabled = True
 
-        # Mode-gated compression:
-        # - If policy.auto_compress_enabled is explicitly set, respect it (but still allow app_config to disable).
-        # - If policy.auto_compress_enabled is None, only enable for agent-like modes.
-        mode_slug = str(getattr(policy, "mode", "chat") or "chat")
-
+        # Auto-compress behavior:
+        # - policy.auto_compress_enabled=False: force OFF
+        # - policy.auto_compress_enabled=True/None: ON if app config allows
         if policy.auto_compress_enabled is False:
             enabled = False
-        elif policy.auto_compress_enabled is True:
-            enabled = bool(cfg_enabled)
         else:
-            agent_like = False
-            try:
-                from core.agent.modes.manager import ModeManager
-
-                mm = ModeManager(getattr(conversation, "work_dir", None) or None)
-                agent_like = bool(mm.get(mode_slug).is_agent_like())
-            except Exception:
-                agent_like = mode_slug.strip().lower() in {"agent", "code", "debug"}
-
-            enabled = bool(cfg_enabled) and bool(agent_like)
+            enabled = bool(cfg_enabled)
 
         if not enabled:
             return

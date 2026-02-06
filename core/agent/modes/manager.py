@@ -12,6 +12,23 @@ from core.agent.modes.defaults import get_default_modes
 from core.agent.modes.types import GroupOptions, ModeConfig, normalize_mode_slug
 
 
+def resolve_mode_config(
+    mode_slug: str,
+    *,
+    work_dir: str | None = None,
+    mode_manager: Optional["ModeManager"] = None,
+) -> ModeConfig:
+    """Resolve a ModeConfig for a slug.
+
+    Kept as a tiny helper so call sites don't need to manually
+    instantiate a ModeManager.
+    """
+
+    slug = normalize_mode_slug(str(mode_slug or "chat"))
+    mm = mode_manager or ModeManager(work_dir)
+    return mm.get(slug)
+
+
 class ModeManager:
     """Loads and provides mode configs.
 

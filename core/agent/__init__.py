@@ -1,42 +1,15 @@
 """Core agent/runtime package.
 
-This package contains the unified runtime used by both Chat and Agent modes.
-It must not depend on Qt.
+Keep this package import-light.
 
-Important: keep this module lightweight.
-Many parts of the app import `core.agent.modes` for configuration; importing
-that subpackage should not eagerly import the full runtime.
+Public modules:
+- `core.agent.message_engine`
+- `core.agent.policy`
+- `core.agent.policy_builder`
+- `core.agent.modes.*`
+
+Rationale:
+- Avoid package-level export proxies (e.g. `__getattr__`) to keep imports explicit.
+- `core.agent.modes` is imported widely (UI + prompt building). It must not pull
+  in the runtime engine unless explicitly requested.
 """
-
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from .message_engine import MessageEngine, RunResult
-    from .policy import RunPolicy
-    from .policy_builder import build_run_policy
-
-
-__all__ = [
-    "MessageEngine",
-    "RunResult",
-    "RunPolicy",
-    "build_run_policy",
-]
-
-
-def __getattr__(name: str) -> Any:
-    if name in {"MessageEngine", "RunResult"}:
-        from .message_engine import MessageEngine, RunResult
-
-        return {"MessageEngine": MessageEngine, "RunResult": RunResult}[name]
-    if name == "RunPolicy":
-        from .policy import RunPolicy
-
-        return RunPolicy
-    if name == "build_run_policy":
-        from .policy_builder import build_run_policy
-
-        return build_run_policy
-    raise AttributeError(name)

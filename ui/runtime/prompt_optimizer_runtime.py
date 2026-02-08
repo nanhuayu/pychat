@@ -9,7 +9,7 @@ from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.llm.client import LLMClient
-from core.prompt_optimize.prompts import DEFAULT_PROMPT_OPTIMIZER_SYSTEM_PROMPT
+from core.prompts.templates import DEFAULT_PROMPT_OPTIMIZER_SYSTEM_PROMPT
 from models.conversation import Conversation, Message
 from models.provider import Provider
 
@@ -25,8 +25,6 @@ def _strip_code_fences(text: str) -> str:
 
 
 class PromptOptimizer(QObject):
-    """Background prompt optimization helper (non-stream, no tools)."""
-
     optimize_started = pyqtSignal(str, str)
     optimize_complete = pyqtSignal(str, str, str)
     optimize_error = pyqtSignal(str, str, str)
@@ -35,7 +33,7 @@ class PromptOptimizer(QObject):
         super().__init__(parent)
         self._client = client
         self._lock = threading.Lock()
-        self._active: dict[str, str] = {}  # conversation_id -> request_id
+        self._active: dict[str, str] = {}
 
     def start(
         self,

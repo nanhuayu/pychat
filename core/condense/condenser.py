@@ -4,7 +4,7 @@ from typing import List, Any
 from models.conversation import Conversation, Message
 from models.provider import Provider
 from models.state import SessionState
-from core.condense.prompts import SUMMARY_PROMPT, SUMMARY_SYSTEM_PROMPT
+from core.prompts.templates import SUMMARY_PROMPT, SUMMARY_SYSTEM_PROMPT
 class ContextCondenser:
     """
     Handles conversation condensation (summarization) to manage context window.

@@ -20,7 +20,7 @@ from core.llm.client import LLMClient
 from services.provider_service import ProviderService
 from core.tools.manager import McpManager
 from ui.runtime.message_runtime import MessageRuntime
-from controllers.prompt_optimizer import PromptOptimizer
+from ui.runtime.prompt_optimizer_runtime import PromptOptimizer
 
 from .widgets.sidebar import Sidebar
 from .widgets.chat_view import ChatView

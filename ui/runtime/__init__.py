@@ -7,5 +7,6 @@ Core engines must NOT import from here.
 """
 
 from .message_runtime import MessageRuntime
+from .prompt_optimizer_runtime import PromptOptimizer
 
-__all__ = ["MessageRuntime"]
+__all__ = ["MessageRuntime", "PromptOptimizer"]

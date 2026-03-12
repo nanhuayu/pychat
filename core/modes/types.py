@@ -24,6 +24,9 @@ class GroupOptions:
 GroupName = str
 GroupEntry = Union[GroupName, Tuple[GroupName, GroupOptions]]
 
+# All known tool groups.
+TOOL_GROUPS = {"read", "edit", "command", "mcp", "search", "browser", "modes"}
+
 
 @dataclass(frozen=True)
 class ModeConfig:
@@ -36,34 +39,23 @@ class ModeConfig:
     groups: Sequence[GroupEntry] = field(default_factory=tuple)
     source: Optional[ModeSource] = None
 
-    def is_agent_like(self) -> bool:
-        """Whether this mode should include tool/workspace framing in system prompt."""
-        # Conservative heuristic: only treat as agent-like if it can *change* the system
-        # (edit/command), or if it's explicitly a tool-execution mode.
-        if self.slug in {"agent", "code", "debug"}:
-            return True
-
-        group_names: List[str] = []
+    def group_names(self) -> set[str]:
+        """Return the flat set of group name strings."""
+        names: set[str] = set()
         for g in self.groups or []:
             if isinstance(g, tuple) and g:
-                group_names.append(str(g[0]))
+                names.add(str(g[0]))
             else:
-                group_names.append(str(g))
+                names.add(str(g))
+        return names
 
-        agent_groups = {"edit", "command"}
-        return any((n in agent_groups) for n in group_names)
+    def has_group(self, name: str) -> bool:
+        return name in self.group_names()
 
 
 def normalize_mode_slug(raw: str) -> str:
     s = (raw or "").strip().lower()
-    if not s:
-        return "chat"
-
-    # Legacy compatibility.
-    if s in {"chat", "agent"}:
-        return s
-
-    return s
+    return s if s else "chat"
 
 
 def safe_mode_display_name(mode: ModeConfig) -> str:

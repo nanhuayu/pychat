@@ -25,7 +25,7 @@ class SummaryService:
             return feedback
 
         # Use deferred import to avoid circular dependencies if any (though here it should be clean)
-        from core.condense.condenser import ContextCondenser
+        from core.context.condenser import ContextCondenser
         condenser = ContextCondenser(llm_client)
         
         feedback.append("⏳ Archiving context... (this uses LLM)")

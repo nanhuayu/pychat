@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
-import re
-from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from core.config.io import get_user_modes_json_path
-from core.agent.modes.defaults import get_default_modes
-from core.agent.modes.types import GroupOptions, ModeConfig, normalize_mode_slug
+from core.modes.defaults import get_default_modes
+from core.modes.types import GroupOptions, ModeConfig, normalize_mode_slug
 
 
 def resolve_mode_config(
@@ -20,10 +17,8 @@ def resolve_mode_config(
 ) -> ModeConfig:
     """Resolve a ModeConfig for a slug.
 
-    Kept as a tiny helper so call sites don't need to manually
-    instantiate a ModeManager.
+    Convenience helper so call sites don't need to instantiate ModeManager manually.
     """
-
     slug = normalize_mode_slug(str(mode_slug or "chat"))
     mm = mode_manager or ModeManager(work_dir)
     return mm.get(slug)
@@ -32,9 +27,8 @@ def resolve_mode_config(
 class ModeManager:
     """Loads and provides mode configs.
 
-    Design goals:
-    - Simple: built-in defaults first
-    - Extensible: optional user-level modes.json in APPDATA/PyChat
+    - Built-in defaults first
+    - Optional user-level modes.json in APPDATA/PyChat
     """
 
     def __init__(self, work_dir: str | None = None):
@@ -58,7 +52,6 @@ class ModeManager:
 
         modes: Dict[str, ModeConfig] = {m.slug: m for m in get_default_modes()}
 
-        # Optional user override
         try:
             user_path = get_user_modes_json_path()
             if user_path.exists() and user_path.is_file():
@@ -68,7 +61,6 @@ class ModeManager:
         except Exception:
             pass
 
-        # Ensure required base modes exist
         if "chat" not in modes:
             modes["chat"] = get_default_modes()[0]
 
@@ -92,7 +84,7 @@ class ModeManager:
                 continue
 
             groups = it.get("groups") or []
-            parsed_groups = []
+            parsed_groups: list = []
             if isinstance(groups, list):
                 for g in groups:
                     if isinstance(g, str):
@@ -116,7 +108,6 @@ class ModeManager:
                 )
             )
 
-        # Deduplicate by slug, keep last
         dedup: Dict[str, ModeConfig] = {}
         for m in out:
             dedup[m.slug] = m

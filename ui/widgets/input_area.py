@@ -11,82 +11,227 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QStringListModel, QRect
 from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QTextCursor
-import base64
 import os
-from typing import List, Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from core.agent.modes.manager import ModeManager
-from core.agent.modes.features import get_mode_feature_policy, clamp_feature_flags
-from core.agent.policy import RunPolicy
-from core.agent.policy_builder import build_run_policy
+from core.commands import CommandRegistry
+from core.modes.manager import ModeManager
+from core.modes.features import get_mode_feature_policy, clamp_feature_flags
+from core.task.types import RunPolicy
+from core.task.builder import build_run_policy
+from core.commands.mentions import MentionCandidate, MentionKind, MentionQuery
 
-from ui.utils.image_loader import load_pixmap
 from ui.utils.image_utils import extract_images_from_mime, is_supported_image_path
+from ui.utils.image_loader import load_pixmap
 
 
 class AttachmentPreviewItem(QFrame):
-    """Preview item for attached images or files"""
-    
+    """Preview item for attached images or files."""
+
     remove_requested = pyqtSignal(str)
-    
+
     def __init__(self, source: str, is_image: bool = True, parent=None):
         super().__init__(parent)
         self.source = source
         self.is_image = is_image
         self._setup_ui()
-    
-    def _setup_ui(self):
+
+    def _setup_ui(self) -> None:
         self.setObjectName("image_preview_item")
-        self.setFixedSize(60, 56)  # Slightly wider for file names
-        
+        self.setFixedSize(60, 56)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(1)
-        
+
         thumb = QLabel()
         thumb.setObjectName("image_thumb")
         thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         if self.is_image:
             pixmap = load_pixmap(self.source)
             if not pixmap.isNull():
-                scaled = pixmap.scaled(56, 38, Qt.AspectRatioMode.KeepAspectRatio,
-                                       Qt.TransformationMode.SmoothTransformation)
+                scaled = pixmap.scaled(
+                    56,
+                    38,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
                 thumb.setPixmap(scaled)
             else:
                 thumb.setText("IMG")
         else:
-            # File icon/text
             ext = os.path.splitext(self.source)[1].lower() or "FILE"
             thumb.setText(ext)
             thumb.setStyleSheet("font-size: 10px; font-weight: bold; color: #555;")
             thumb.setToolTip(os.path.basename(self.source))
 
         layout.addWidget(thumb)
-        
-        # Add filename label for non-images
+
         if not self.is_image:
             name_lbl = QLabel(os.path.basename(self.source))
             name_lbl.setObjectName("file_name_lbl")
             name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             name_lbl.setStyleSheet("font-size: 9px; color: #666;")
-            # Elide text
             font_metrics = name_lbl.fontMetrics()
-            elided = font_metrics.elidedText(name_lbl.text(), Qt.TextElideMode.ElideMiddle, 56)
+            elided = name_lbl.fontMetrics().elidedText(
+                name_lbl.text(),
+                Qt.TextElideMode.ElideMiddle,
+                56,
+            )
             name_lbl.setText(elided)
             layout.addWidget(name_lbl)
 
-        
         remove_btn = QPushButton("×")
         remove_btn.setObjectName("image_remove_btn")
         remove_btn.setFixedSize(14, 14)
         remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.source))
-        
-        # Position remove button at top-right absolutely
         remove_btn.setParent(self)
         remove_btn.move(self.width() - 16, 2)
         remove_btn.show()
 
+
+class AttachmentPreviewStrip(QWidget):
+    """Preview strip for attached files/images."""
+
+    remove_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("image_preview")
+        self._items: dict[str, AttachmentPreviewItem] = {}
+
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(4, 0, 4, 0)
+        self._layout.setSpacing(4)
+        self._layout.addStretch()
+        self.setVisible(False)
+
+    def add_attachment(self, source: str, *, is_image: bool) -> None:
+        if source in self._items:
+            return
+
+        item = AttachmentPreviewItem(source, is_image=is_image)
+        item.remove_requested.connect(self.remove_requested.emit)
+        self._items[source] = item
+        self._layout.insertWidget(self._layout.count() - 1, item)
+        self.setVisible(True)
+
+    def remove_attachment(self, source: str) -> None:
+        item = self._items.pop(source, None)
+        if item is not None:
+            item.deleteLater()
+        if not self._items:
+            self.setVisible(False)
+
+    def clear_attachments(self) -> None:
+        for source in list(self._items.keys()):
+            self.remove_attachment(source)
+
+
+class ComposerToolbar(QWidget):
+    """Toolbar widget for provider/model/mode controls."""
+
+    attach_requested = pyqtSignal()
+    conversation_settings_requested = pyqtSignal()
+    provider_settings_requested = pyqtSignal()
+    prompt_optimize_requested = pyqtSignal()
+    send_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.attach_btn = self._make_button("📎", "添加文件/图片")
+        self.attach_btn.clicked.connect(self.attach_requested.emit)
+        layout.addWidget(self.attach_btn)
+
+        self.provider_combo = QComboBox()
+        self.provider_combo.setObjectName("provider_combo")
+        self.provider_combo.setMinimumWidth(70)
+        self.provider_combo.setMaximumWidth(110)
+        layout.addWidget(self.provider_combo)
+
+        self.model_combo = QComboBox()
+        self.model_combo.setObjectName("model_combo")
+        self.model_combo.setMinimumWidth(120)
+        self.model_combo.setMaximumWidth(200)
+        self.model_combo.setEditable(True)
+        layout.addWidget(self.model_combo)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("mode_combo")
+        self.mode_combo.setMinimumWidth(70)
+        self.mode_combo.setToolTip("选择对话模式")
+        layout.addWidget(self.mode_combo)
+
+        self.thinking_toggle = self._make_toggle("🧠", "显示思考过程")
+        layout.addWidget(self.thinking_toggle)
+
+        self.mcp_toggle = self._make_toggle("🔌", "启用 MCP 工具")
+        layout.addWidget(self.mcp_toggle)
+
+        self.search_toggle = self._make_toggle("🔍", "启用网络搜索")
+        layout.addWidget(self.search_toggle)
+
+        self.conv_settings_btn = self._make_button("⚙", "对话设置 (采样参数/系统提示)")
+        self.conv_settings_btn.clicked.connect(self.conversation_settings_requested.emit)
+        layout.addWidget(self.conv_settings_btn)
+
+        self.provider_settings_btn = self._make_button("🔧", "配置服务商 (API/Key/模型列表)")
+        self.provider_settings_btn.clicked.connect(self.provider_settings_requested.emit)
+        layout.addWidget(self.provider_settings_btn)
+
+        layout.addStretch()
+
+        self.prompt_optimize_btn = self._make_button("✨", "优化提示词")
+        self.prompt_optimize_btn.clicked.connect(self.prompt_optimize_requested.emit)
+        layout.addWidget(self.prompt_optimize_btn)
+
+        self.send_btn = self._make_button("➤", "发送消息 (Ctrl+Enter)")
+        self.send_btn.clicked.connect(self.send_requested.emit)
+        layout.addWidget(self.send_btn)
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _make_button(self, text: str, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("toolbar_btn")
+        button.setText(text)
+        button.setToolTip(tooltip)
+        return button
+
+    def _make_toggle(self, text: str, tooltip: str) -> QToolButton:
+        button = self._make_button(text, tooltip)
+        button.setCheckable(True)
+        return button
+
+    def set_streaming_state(self, is_streaming: bool, style) -> None:
+        if is_streaming:
+            try:
+                self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_MediaStop))
+            except Exception:
+                pass
+            self.send_btn.setToolTip("停止生成")
+            self.prompt_optimize_btn.setEnabled(False)
+            self.mcp_toggle.setEnabled(False)
+            self.search_toggle.setEnabled(False)
+            return
+
+        try:
+            self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_ArrowRight))
+        except Exception:
+            pass
+        self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
+
+    def set_prompt_optimize_busy(self, busy: bool, *, is_streaming: bool) -> None:
+        self.prompt_optimize_btn.setEnabled((not busy) and (not is_streaming))
+        self.prompt_optimize_btn.setToolTip("优化中..." if busy else "优化提示词")
 
 class FileCompleterPopup(QListWidget):
     """Popup list for file completion"""
@@ -137,7 +282,7 @@ class FileCompleterPopup(QListWidget):
 
 
 class MessageTextEdit(QTextEdit):
-    """Custom text edit with Ctrl+Enter to send and # file completion"""
+    """Custom text edit with Ctrl+Enter and inline mention completion."""
     
     send_requested = pyqtSignal()
     attachments_received = pyqtSignal(list)
@@ -147,6 +292,10 @@ class MessageTextEdit(QTextEdit):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.work_dir: Optional[str] = None
+        self._command_registry: Optional[CommandRegistry] = None
+        self._mention_context_provider: Optional[Callable[[], Dict[str, Any]]] = None
+        self._completion_candidates: dict[str, MentionCandidate] = {}
+        self._active_query: Optional[MentionQuery] = None
         
         # Completion popup
         self.completer_popup = FileCompleterPopup(self)
@@ -159,6 +308,14 @@ class MessageTextEdit(QTextEdit):
 
     def set_work_dir(self, path: str):
         self.work_dir = path
+
+    def configure_command_registry(
+        self,
+        registry: CommandRegistry,
+        context_provider: Callable[[], Dict[str, Any]],
+    ) -> None:
+        self._command_registry = registry
+        self._mention_context_provider = context_provider
 
     def _refresh_modes(self, work_dir: str) -> None:
         try:
@@ -229,86 +386,82 @@ class MessageTextEdit(QTextEdit):
         self._check_completion()
 
     def _check_completion(self):
+        if not self._command_registry or not self._mention_context_provider:
+            self.completer_popup.hide()
+            return
+
         cursor = self.textCursor()
-        text = self.toPlainText()
-        pos = cursor.position()
-        
-        # Look backwards for '#'
-        # Simple heuristic: find last '#' before cursor that is not preceded by non-space
-        # (Actually, strict '#name' is fine)
-        
-        line_start = text.rfind('\n', 0, pos) + 1
-        current_line_text = text[line_start:pos]
-        
-        hash_idx = current_line_text.rfind('#')
-        if hash_idx != -1:
-            # Check if it's a valid trigger (start of line or preceded by space)
-            if hash_idx == 0 or current_line_text[hash_idx-1].isspace():
-                prefix = current_line_text[hash_idx+1:]
-                self._show_completer(prefix, pos - len(prefix))
-                return
-        
+        result = self._command_registry.get_mention_candidates(
+            self.toPlainText(),
+            cursor.position(),
+            self._mention_context_provider(),
+        )
+        if result:
+            query, candidates = result
+            self._show_completer(query, candidates)
+            return
+
+        self._active_query = None
+        self._completion_candidates.clear()
         self.completer_popup.hide()
 
-    def _show_completer(self, prefix: str, global_pos: int):
-        if not self.work_dir or not os.path.isdir(self.work_dir):
+    def _show_completer(self, query: MentionQuery, candidates: List[MentionCandidate]):
+        if not candidates:
             self.completer_popup.hide()
             return
-            
-        try:
-            files = [f for f in os.listdir(self.work_dir) 
-                     if os.path.isfile(os.path.join(self.work_dir, f)) 
-                     and not f.startswith('.')
-                     and prefix.lower() in f.lower()]
-        except Exception:
-            files = []
-            
-        if not files:
-            self.completer_popup.hide()
-            return
-            
+
         rect = self.cursorRect()
-        # Map to global coordinates then to popup parent (which is this widget, so just widget coords)
-        # Actually QListWidget is child of TextEdit, so simple mapToGlobal not needed if move(local)
-        # But we want it to float. 
-        # Better: map to global, then map to parent of popup if popup was window.
-        # Here popup is child of TextEdit.
-        # Let's adjust position.
-        
         point = self.viewport().mapToGlobal(rect.bottomLeft())
         point.setY(point.y() + 5)
-        
-        self._completion_prefix = prefix
-        self._completion_start_pos = global_pos
-        self.completer_popup.show_completions(files, point)
+
+        self._active_query = query
+        self._completion_prefix = query.prefix
+        self._completion_start_pos = query.start_pos
+        self._completion_candidates = {candidate.label: candidate for candidate in candidates}
+        self.completer_popup.show_completions([candidate.label for candidate in candidates], point)
 
     def _on_completion_selected(self, item):
-        filename = item.text()
-        if not filename or not self.work_dir:
+        if not self._command_registry or not self._mention_context_provider or not self._active_query:
             return
-            
-        full_path = os.path.join(self.work_dir, filename)
-        
-        # Replace the #text with nothing (since we add it as attachment)
-        # Or replace with [File: name]
-        
+
+        display_name = item.text()
+        candidate = self._completion_candidates.get(display_name)
+        if not display_name or candidate is None:
+            return
+
         cursor = self.textCursor()
-        # We need to delete back to '#'
-        # Position is current cursor. 
-        # We know prefix length.
-        prefix_len = len(self._completion_prefix)
-        
-        # Select from (end) back to (start - 1 for hash)
-        # Wait, cursor is at end of prefix.
-        
-        # Move cursor to end of prefix if not already (it should be)
-        # Select previous (prefix_len + 1) characters
-        for _ in range(prefix_len + 1):
-            cursor.deletePreviousChar()
-            
+        cursor.setPosition(self._active_query.start_pos)
+        cursor.setPosition(self._active_query.end_pos, QTextCursor.MoveMode.KeepAnchor)
+
+        if not candidate.terminal:
+            cursor.insertText(f"{self._active_query.trigger}{candidate.value}")
+            self.setTextCursor(cursor)
+            self.completer_popup.hide()
+            self._check_completion()
+            return
+
+        if candidate.kind != MentionKind.FILE:
+            insert_text = candidate.insert_text or f"{self._active_query.trigger}{candidate.value}"
+            cursor.insertText(insert_text)
+            self.setTextCursor(cursor)
+            self.completer_popup.hide()
+            self._active_query = None
+            self._completion_candidates.clear()
+            return
+
+        full_path = self._command_registry.resolve_mention_candidate(
+            candidate,
+            self._mention_context_provider(),
+        )
+        if not full_path:
+            self.completer_popup.hide()
+            return
+
+        cursor.removeSelectedText()
         self.setTextCursor(cursor)
         self.completer_popup.hide()
-        
+        self._active_query = None
+        self._completion_candidates.clear()
         self.file_reference_added.emit(full_path)
 
 
@@ -316,6 +469,7 @@ class InputArea(QWidget):
     """Input area - single-row compact toolbar + input"""
     
     message_sent = pyqtSignal(str, list)
+    slash_command_result = pyqtSignal(object)  # CommandResult from slash commands
     cancel_requested = pyqtSignal()
     conversation_settings_requested = pyqtSignal()
     provider_settings_requested = pyqtSignal()  # New: quick access to provider config
@@ -325,11 +479,21 @@ class InputArea(QWidget):
     prompt_optimize_requested = pyqtSignal(str)  # Optimize current input prompt
     
     provider_model_changed = pyqtSignal(str, str)  # provider_id, model
-    def __init__(self, parent=None):
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        command_registry: Optional[CommandRegistry] = None,
+        tool_schema_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None,
+    ):
         super().__init__(parent)
         self.setObjectName("input_container")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._command_registry = command_registry or CommandRegistry()
+        self._tool_schema_provider = tool_schema_provider
         self._attachments: List[Dict[str, Any]] = []  # [{'path': str, 'type': 'image'|'file'}]
+        self._conversation = None
         self._providers = []
         self._suppress_thinking_signal = False
         self._suppress_tool_signals = False
@@ -380,16 +544,10 @@ class InputArea(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 6)
         layout.setSpacing(3)
-        
-        # Image preview (hidden by default)
-        self.image_preview = QWidget()
-        self.image_preview.setObjectName("image_preview")
-        self.image_layout = QHBoxLayout(self.image_preview)
-        self.image_layout.setContentsMargins(4, 0, 4, 0)
-        self.image_layout.setSpacing(4)
-        self.image_layout.addStretch()
-        self.image_preview.setVisible(False)
-        layout.addWidget(self.image_preview)
+
+        self.attachment_strip = AttachmentPreviewStrip()
+        self.attachment_strip.remove_requested.connect(self._remove_attachment)
+        layout.addWidget(self.attachment_strip)
         
         # ===== Main input wrapper =====
         input_wrapper = QFrame()
@@ -403,122 +561,44 @@ class InputArea(QWidget):
         # Text input
         self.text_input = MessageTextEdit()
         self.text_input.setObjectName("message_input")
-        self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，# 引用当前文件夹文件)")
+        self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，#file，@tool，@mode)")
         self.text_input.setMinimumHeight(40)
-        # self.text_input.setMaximumHeight(120)  # Removed to allow expansion in splitter
         self.text_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.text_input.configure_command_registry(self._command_registry, self._build_command_context)
         self.text_input.send_requested.connect(self._send_message)
         self.text_input.attachments_received.connect(self.add_attachments)
         self.text_input.file_reference_added.connect(self._add_attachment_file)
         wrapper_layout.addWidget(self.text_input)
-        
-        # ===== Single-row toolbar: [📎] [Provider▾] [Model▾] [🧠] [⚙] [🔧] --- [发送] =====
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(2)
-        
-        # Attach button
-        self.attach_btn = QToolButton()
-        self.attach_btn.setObjectName("toolbar_btn")
-        self.attach_btn.setText("📎")
-        self.attach_btn.setToolTip("添加文件/图片")
-        self.attach_btn.clicked.connect(self._attach_file)
-        toolbar.addWidget(self.attach_btn)
-        
-        # Provider selector
-        self.provider_combo = QComboBox()
-        self.provider_combo.setObjectName("provider_combo")
-        self.provider_combo.setMinimumWidth(70)
-        self.provider_combo.setMaximumWidth(110)
-        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        self.provider_combo.currentIndexChanged.connect(self._emit_provider_model_changed)
-        toolbar.addWidget(self.provider_combo)
-        
-        # Model selector
-        self.model_combo = QComboBox()
-        self.model_combo.setObjectName("model_combo")
-        self.model_combo.setMinimumWidth(120)
-        self.model_combo.setMaximumWidth(200)
-        self.model_combo.setEditable(True)
-        self.model_combo.currentTextChanged.connect(self._emit_provider_model_changed)
-        toolbar.addWidget(self.model_combo)
 
-        # Mode selector
-        self.mode_combo = QComboBox()
-        self.mode_combo.setObjectName("mode_combo")
-        # Populate modes from ModeManager
+        self.toolbar = ComposerToolbar()
+        self.toolbar.attach_requested.connect(self._attach_file)
+        self.toolbar.conversation_settings_requested.connect(self.conversation_settings_requested.emit)
+        self.toolbar.provider_settings_requested.connect(self.provider_settings_requested.emit)
+        self.toolbar.prompt_optimize_requested.connect(self._on_prompt_optimize_clicked)
+        self.toolbar.send_requested.connect(self._on_send_btn_clicked)
+        wrapper_layout.addWidget(self.toolbar)
+        layout.addWidget(input_wrapper)
+
+        self.provider_combo = self.toolbar.provider_combo
+        self.model_combo = self.toolbar.model_combo
+        self.mode_combo = self.toolbar.mode_combo
+        self.thinking_toggle = self.toolbar.thinking_toggle
+        self.mcp_toggle = self.toolbar.mcp_toggle
+        self.search_toggle = self.toolbar.search_toggle
+        self.prompt_optimize_btn = self.toolbar.prompt_optimize_btn
+        self.send_btn = self.toolbar.send_btn
+
         self._mode_manager = ModeManager()
         for m in self._mode_manager.list_modes():
             self.mode_combo.addItem(m.name, m.slug)
+
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        self.provider_combo.currentIndexChanged.connect(self._emit_provider_model_changed)
+        self.model_combo.currentTextChanged.connect(self._emit_provider_model_changed)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        self.mode_combo.setToolTip("选择对话模式")
-        self.mode_combo.setMinimumWidth(70)
-        toolbar.addWidget(self.mode_combo)
-        
-        # Thinking toggle
-        self.thinking_toggle = QToolButton()
-        self.thinking_toggle.setObjectName("toolbar_btn")
-        self.thinking_toggle.setText("🧠")
-        self.thinking_toggle.setToolTip("显示思考过程")
-        self.thinking_toggle.setCheckable(True)
         self.thinking_toggle.toggled.connect(self._on_thinking_toggled)
-        toolbar.addWidget(self.thinking_toggle)
-        
-        # MCP toggle
-        self.mcp_toggle = QToolButton()
-        self.mcp_toggle.setObjectName("toolbar_btn")
-        self.mcp_toggle.setText("🔌")
-        self.mcp_toggle.setToolTip("启用 MCP 工具")
-        self.mcp_toggle.setCheckable(True)
         self.mcp_toggle.toggled.connect(self._on_mcp_toggled)
-        toolbar.addWidget(self.mcp_toggle)
-        
-        # Search toggle
-        self.search_toggle = QToolButton()
-        self.search_toggle.setObjectName("toolbar_btn")
-        self.search_toggle.setText("🔍")
-        self.search_toggle.setToolTip("启用网络搜索")
-        self.search_toggle.setCheckable(True)
         self.search_toggle.toggled.connect(self._on_search_toggled)
-        toolbar.addWidget(self.search_toggle)
-        
-        # Conversation settings
-        self.conv_settings_btn = QToolButton()
-        self.conv_settings_btn.setObjectName("toolbar_btn")
-        self.conv_settings_btn.setText("⚙")
-        self.conv_settings_btn.setToolTip("对话设置 (采样参数/系统提示)")
-        self.conv_settings_btn.clicked.connect(self.conversation_settings_requested.emit)
-        toolbar.addWidget(self.conv_settings_btn)
-        
-        # Provider settings (quick access)
-        self.provider_settings_btn = QToolButton()
-        self.provider_settings_btn.setObjectName("toolbar_btn")
-        self.provider_settings_btn.setText("🔧")
-        self.provider_settings_btn.setToolTip("配置服务商 (API/Key/模型列表)")
-        self.provider_settings_btn.clicked.connect(self.provider_settings_requested.emit)
-        toolbar.addWidget(self.provider_settings_btn)
-        
-        toolbar.addStretch()
-        # Prompt optimize button (icon)
-        self.prompt_optimize_btn = QToolButton()
-        self.prompt_optimize_btn.setObjectName("toolbar_btn")
-        self.prompt_optimize_btn.setText("✨")
-        # self.prompt_optimize_btn.setFixedSize(30, 28)
-        self.prompt_optimize_btn.setToolTip("优化提示词")
-        self.prompt_optimize_btn.clicked.connect(self._on_prompt_optimize_clicked)
-        toolbar.addWidget(self.prompt_optimize_btn)
-        # Send button (icon)
-        self.send_btn = QToolButton()
-        self.send_btn.setObjectName("toolbar_btn")
-        # self.send_btn.setText("➡") 
-        # self.send_btn.setText("⬆")
-        self.send_btn.setText("➤")
-        # self.send_btn.setFixedSize(34, 28)
-        self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
-        self.send_btn.clicked.connect(self._on_send_btn_clicked)
-        toolbar.addWidget(self.send_btn)
-        
-        wrapper_layout.addLayout(toolbar)
-        layout.addWidget(input_wrapper)
 
         # Apply initial policy (enable/disable only) based on default mode.
         # Do not force defaults here; the current conversation/settings will sync later.
@@ -571,36 +651,12 @@ class InputArea(QWidget):
             self._suppress_tool_signals = False
     def set_streaming_state(self, is_streaming: bool):
         self._is_streaming = is_streaming
+        self.toolbar.set_streaming_state(is_streaming, self.style())
         if is_streaming:
-            try:
-                self.send_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
-            except Exception:
-                pass
-            self.send_btn.setToolTip("停止生成")
             self.text_input.setEnabled(False)
-            try:
-                self.prompt_optimize_btn.setEnabled(False)
-            except Exception:
-                pass
-            try:
-                # Streaming disables tool toggles (policy still applies)
-                self.mcp_toggle.setEnabled(False)
-                self.search_toggle.setEnabled(False)
-            except Exception:
-                pass
         else:
-            try:
-                self.send_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
-            except Exception:
-                pass
-            self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
             self.text_input.setEnabled(True)
             self.text_input.setFocus()
-            try:
-                # only re-enable if not busy
-                self.prompt_optimize_btn.setEnabled(True)
-            except Exception:
-                pass
             try:
                 self._apply_mode_policy(apply_defaults=False)
             except Exception:
@@ -608,11 +664,7 @@ class InputArea(QWidget):
 
 
     def set_prompt_optimize_busy(self, busy: bool) -> None:
-        try:
-            self.prompt_optimize_btn.setEnabled((not busy) and (not self._is_streaming))
-            self.prompt_optimize_btn.setToolTip("优化中..." if busy else "优化提示词")
-        except Exception:
-            pass
+        self.toolbar.set_prompt_optimize_busy(busy, is_streaming=self._is_streaming)
 
     def _on_prompt_optimize_clicked(self) -> None:
         try:
@@ -733,10 +785,10 @@ class InputArea(QWidget):
         except Exception:
             return bool(self._search_enabled), bool(self._mcp_enabled)
 
-    def build_run_policy(self, *, enable_thinking: Optional[bool] = None) -> RunPolicy:
+    def build_run_policy(self, *, enable_thinking: Optional[bool] = None, retry_config=None) -> RunPolicy:
         """Build RunPolicy based on selected mode + current toggles.
 
-        Note: The core mapping lives in `core.agent.policy_builder.build_run_policy`
+        Note: The core mapping lives in `core.task.builder.build_run_policy`
         (pure core, reusable by future TUI). This method only reads UI state.
         """
 
@@ -760,6 +812,7 @@ class InputArea(QWidget):
             enable_search=bool(enable_search),
             enable_mcp=bool(enable_mcp),
             mode_manager=getattr(self, "_mode_manager", None),
+            retry_config=retry_config,
         )
 
     def apply_mode_policy(self, apply_defaults: bool = False) -> None:
@@ -802,90 +855,74 @@ class InputArea(QWidget):
             is_img = True
             
         self._attachments.append({'path': path, 'type': 'image' if is_img else 'file'})
-        
-        preview = AttachmentPreviewItem(path, is_image=is_img)
-        preview.remove_requested.connect(self._remove_attachment)
-        self.image_layout.insertWidget(self.image_layout.count() - 1, preview)
-        self.image_preview.setVisible(True)
+        self.attachment_strip.add_attachment(path, is_image=is_img)
 
     def _remove_attachment(self, path: str):
         for i, att in enumerate(self._attachments):
             if att['path'] == path:
                 self._attachments.pop(i)
                 break
-        
-        for i in range(self.image_layout.count()):
-            item = self.image_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, AttachmentPreviewItem) and widget.source == path:
-                widget.deleteLater()
-                break
-        
-        if not self._attachments:
-            self.image_preview.setVisible(False)
+
+        self.attachment_strip.remove_attachment(path)
+
+    def set_conversation(self, conversation) -> None:
+        """Set the current conversation for command context."""
+        self._conversation = conversation
+
+    def _build_command_context(self) -> Dict[str, Any]:
+        try:
+            available_tools = self._tool_schema_provider() if self._tool_schema_provider else []
+        except Exception:
+            available_tools = []
+
+        return {
+            "current_mode": self.get_selected_mode_slug(),
+            "conversation": self._conversation,
+            "work_dir": self._work_dir,
+            "available_tools": available_tools,
+            "available_modes": [
+                {"slug": mode.slug, "name": mode.name}
+                for mode in self._mode_manager.list_modes()
+            ],
+        }
+
+    def _try_handle_slash_command(self, content: str) -> bool:
+        if not self._command_registry.is_slash_command(content):
+            return False
+
+        result = self._command_registry.execute(content, self._build_command_context())
+        if result is None:
+            return False
+
+        self.text_input.clear()
+        self.slash_command_result.emit(result)
+        return True
+
+    def _emit_message_payload(self, content: str) -> None:
+        from core.attachments import process_attachments
+
+        result = process_attachments(self._attachments)
+        if result.file_content_suffix:
+            content += result.file_content_suffix
+        self.message_sent.emit(content, result.encoded_images)
+
+    def _clear_composer(self) -> None:
+        self.text_input.clear()
+        self._attachments.clear()
+        self.attachment_strip.clear_attachments()
 
     def _send_message(self):
         content = self.text_input.toPlainText().strip()
 
-        # Allow sending if we have attachments
+        if content.startswith("/") and self._try_handle_slash_command(content):
+            return
+
         if not content and not self._attachments:
             self.message_sent.emit("", [])
             return
-        
-        encoded_images = []
-        file_contents = []
-        
-        for att in self._attachments:
-            path = att['path']
-            atype = att['type']
-            
-            if atype == 'image':
-                try:
-                    if isinstance(path, str) and path.startswith('data:'):
-                        encoded_images.append(path)
-                        continue
 
-                    with open(path, 'rb') as f:
-                        data = base64.b64encode(f.read()).decode('utf-8')
-                    ext = os.path.splitext(path)[1].lower()
-                    mime = {'.png': 'image/png', '.jpg': 'image/jpeg',
-                            '.jpeg': 'image/jpeg', '.gif': 'image/gif',
-                            '.webp': 'image/webp', '.bmp': 'image/bmp'}.get(ext, 'image/png')
-                    encoded_images.append(f"data:{mime};base64,{data}")
-                except Exception as e:
-                    print(f"Error loading image {path}: {e}")
-            else:
-                # Text/Other file
-                try:
-                    # Check size limit? e.g. 1MB for now
-                    if os.path.getsize(path) > 1024 * 1024:
-                        print(f"File too large: {path}")
-                        # Maybe add a warning note?
-                        file_contents.append(f"\n[File: {os.path.basename(path)} (Skipped: >1MB)]\n")
-                        continue
-                        
-                    try:
-                        with open(path, 'r', encoding='utf-8') as f:
-                            text = f.read()
-                        file_contents.append(f"\n\n--- File: {os.path.basename(path)} ---\n{text}\n--- End File ---")
-                    except UnicodeDecodeError:
-                        file_contents.append(f"\n[File: {os.path.basename(path)} (Binary content)]\n")
-                except Exception as e:
-                    print(f"Error reading file {path}: {e}")
-        
-        # Append file contents to message
-        if file_contents:
-            content += "".join(file_contents)
-
-        self.message_sent.emit(content, encoded_images)
-        
-        self.text_input.clear()
-        self._attachments.clear()
-        while self.image_layout.count() > 1:
-            item = self.image_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self.image_preview.setVisible(False)
+        self._emit_message_payload(content)
+        self._clear_composer()
     
     def set_enabled(self, enabled: bool):
         self.text_input.setEnabled(enabled)
@@ -897,4 +934,4 @@ class InputArea(QWidget):
     
     def dropEvent(self, event: QDropEvent):
         data_urls, file_paths = extract_images_from_mime(event.mimeData())
-        self.add_images(data_urls + file_paths)
+        self.add_attachments(data_urls + file_paths)

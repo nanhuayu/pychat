@@ -22,6 +22,10 @@ class WebSearchTool(BaseTool):
         return "read"
 
     @property
+    def group(self) -> str:
+        return "search"
+
+    @property
     def input_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",

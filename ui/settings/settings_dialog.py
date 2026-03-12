@@ -41,6 +41,7 @@ from ui.settings.pages import (
     SearchPage,
     AppearancePage,
     GeneralPage,
+    SkillsPage,
 )
 
 
@@ -143,7 +144,7 @@ class SettingsDialog(QDialog):
         self.modes_page = ModesPage(self.work_dir)
         self.context_page = ContextPage(self._app_config.context)
         self.prompts_page = PromptsPage(self._app_config.prompts, self._app_config.prompt_optimizer)
-        self.agent_page = AgentPermissionsPage(self._app_config.permissions)
+        self.agent_page = AgentPermissionsPage(self._app_config.permissions, retry=self._app_config.retry)
         self.mcp_page = McpPage()
         self.search_page = SearchPage(self.search_config)
         self.appearance_page = AppearancePage(
@@ -153,6 +154,7 @@ class SettingsDialog(QDialog):
             log_stream=self._app_config.log_stream,
         )
         self.general_page = GeneralPage(proxy_url=self._app_config.proxy_url)
+        self.skills_page = SkillsPage(work_dir=self.work_dir)
 
         self._pages = [
             self.models_page,
@@ -162,6 +164,7 @@ class SettingsDialog(QDialog):
             self.agent_page,
             self.mcp_page,
             self.search_page,
+            self.skills_page,
             self.appearance_page,
             self.general_page,
         ]
@@ -222,6 +225,11 @@ class SettingsDialog(QDialog):
             self._auto_approve_patch = {}
 
         try:
+            self._retry_patch = self.agent_page.collect_retry().to_dict()
+        except Exception:
+            self._retry_patch = {}
+
+        try:
             ctx = self.context_page.collect()
             self._context_patch = {"context": ctx.to_dict()}
         except Exception:
@@ -259,6 +267,9 @@ class SettingsDialog(QDialog):
 
     def get_auto_approve_settings(self) -> dict:
         return dict(self._auto_approve_patch or {})
+
+    def get_retry_settings(self) -> dict:
+        return dict(self._retry_patch if hasattr(self, '_retry_patch') else {})
 
     def get_context_settings(self) -> dict:
         return dict(self._context_patch or {})

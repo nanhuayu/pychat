@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGroupBox, QCheckBox
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QGroupBox, QCheckBox,
+    QHBoxLayout, QSpinBox, QDoubleSpinBox, QComboBox,
+)
 
-from core.config.schema import PermissionsConfig
+from core.config.schema import PermissionsConfig, RetryConfig
 
 
 class AgentPermissionsPage(QWidget):
     page_emoji = "🛡️"
     page_title = "Agent & 权限"
 
-    def __init__(self, permissions: PermissionsConfig, parent=None):
+    def __init__(self, permissions: PermissionsConfig, retry: RetryConfig | None = None, parent=None):
         super().__init__(parent)
-        self._setup_ui(permissions)
+        self._setup_ui(permissions, retry or RetryConfig())
 
-    def _setup_ui(self, permissions: PermissionsConfig) -> None:
+    def _setup_ui(self, permissions: PermissionsConfig, retry: RetryConfig) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -40,6 +43,41 @@ class AgentPermissionsPage(QWidget):
 
         layout.addWidget(perm_group)
 
+        # --- Retry strategy ---
+        retry_group = QGroupBox("重试策略")
+        retry_layout = QVBoxLayout(retry_group)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("最大重试次数:"))
+        self.max_retries_spin = QSpinBox()
+        self.max_retries_spin.setRange(0, 10)
+        self.max_retries_spin.setValue(retry.max_retries)
+        self.max_retries_spin.setToolTip("LLM 调用失败后最多重试几次 (0 = 不重试)")
+        row1.addWidget(self.max_retries_spin)
+        retry_layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("基础延迟 (秒):"))
+        self.base_delay_spin = QDoubleSpinBox()
+        self.base_delay_spin.setRange(0.5, 30.0)
+        self.base_delay_spin.setSingleStep(0.5)
+        self.base_delay_spin.setValue(retry.base_delay)
+        self.base_delay_spin.setToolTip("首次重试前等待的秒数")
+        row2.addWidget(self.base_delay_spin)
+        retry_layout.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("退避因子:"))
+        self.backoff_combo = QComboBox()
+        self.backoff_combo.addItems(["1.5", "2.0", "3.0"])
+        current_idx = self.backoff_combo.findText(str(retry.backoff_factor))
+        self.backoff_combo.setCurrentIndex(current_idx if current_idx >= 0 else 1)
+        self.backoff_combo.setToolTip("每次重试后延迟乘以该因子")
+        row3.addWidget(self.backoff_combo)
+        retry_layout.addLayout(row3)
+
+        layout.addWidget(retry_group)
+
         layout.addStretch()
 
     def collect(self) -> PermissionsConfig:
@@ -47,4 +85,11 @@ class AgentPermissionsPage(QWidget):
             auto_approve_read=bool(self.auto_read_check.isChecked()),
             auto_approve_edit=bool(self.auto_edit_check.isChecked()),
             auto_approve_command=bool(self.auto_cmd_check.isChecked()),
+        )
+
+    def collect_retry(self) -> RetryConfig:
+        return RetryConfig(
+            max_retries=self.max_retries_spin.value(),
+            base_delay=self.base_delay_spin.value(),
+            backoff_factor=float(self.backoff_combo.currentText()),
         )

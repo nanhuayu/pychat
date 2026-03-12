@@ -35,6 +35,8 @@ from core.tools.system.shell_exec import ExecuteCommandTool
 from core.tools.system.skills import SkillTool
 from core.tools.system.patch import PatchTool
 from core.tools.system.state_mgr import StateMgrTool
+from core.tools.system.multi_agent import NewTaskTool, AttemptCompletionTool, SwitchModeTool
+from core.tools.system.document_tools import ManageDocumentTool
 
 class McpManager:
     _instance = None
@@ -77,7 +79,9 @@ class McpManager:
             ExecuteCommandTool(),
             SkillTool(),
             PatchTool(),
-            StateMgrTool()  # Unified state management + Condensation
+            StateMgrTool(),
+            ManageDocumentTool(),
+            NewTaskTool(), AttemptCompletionTool(), SwitchModeTool(),
         ]
         for tool in tools:
             self.registry.register(tool)

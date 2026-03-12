@@ -7,6 +7,7 @@ from ui.settings.pages.mcp_page import McpPage
 from ui.settings.pages.search_page import SearchPage
 from ui.settings.pages.appearance_page import AppearancePage
 from ui.settings.pages.general_page import GeneralPage
+from ui.settings.pages.skills_page import SkillsPage
 
 __all__ = [
     "ModelsPage",
@@ -18,4 +19,5 @@ __all__ = [
     "SearchPage",
     "AppearancePage",
     "GeneralPage",
+    "SkillsPage",
 ]

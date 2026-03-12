@@ -23,8 +23,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config import get_user_modes_json_path, load_user_modes_dict, save_user_modes_dict
-from core.agent.modes.manager import ModeManager
-from core.agent.modes.types import ModeConfig, GroupOptions
+from core.modes.manager import ModeManager
+from core.modes.types import ModeConfig, GroupOptions
 
 
 def _mode_to_json(mode: ModeConfig) -> Dict[str, Any]:
@@ -173,7 +173,11 @@ class ModesPage(QWidget):
         form.addRow("名称", self.name_edit)
 
         self.groups_edit = QLineEdit()
-        self.groups_edit.setPlaceholderText("例如：read, mcp, search")
+        self.groups_edit.setPlaceholderText("例如：read, edit, command, search, browser, mcp, modes")
+        self.groups_edit.setToolTip(
+            "可用工具组: read (文件读取), edit (文件编辑), command (Shell 执行), "
+            "search (搜索), browser (浏览器), mcp (MCP 服务), modes (多 Agent 协作)"
+        )
         self.groups_edit.textChanged.connect(self._apply_current_edits)
         form.addRow("Groups", self.groups_edit)
 

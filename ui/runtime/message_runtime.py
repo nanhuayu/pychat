@@ -13,8 +13,8 @@ from models.streaming import ConversationStreamState
 
 from core.llm.client import LLMClient
 from core.tools.manager import McpManager
-from core.agent.message_engine import MessageEngine
-from core.agent.policy import RunPolicy
+from core.task.task import Task
+from core.task.types import RunPolicy, TaskResult, TaskStatus, TaskEvent, TaskEventKind
 
 
 class MessageRuntime(QObject):
@@ -33,18 +33,20 @@ class MessageRuntime(QObject):
     response_step = pyqtSignal(str, str, object)        # conversation_id, request_id, Message
     response_complete = pyqtSignal(str, str, object)    # conversation_id, request_id, Message
     response_error = pyqtSignal(str, str, str)          # conversation_id, request_id, error
+    retry_attempt = pyqtSignal(str, str, str)            # conversation_id, request_id, detail
 
     _raw_token = pyqtSignal(str, str, str)
     _raw_thinking = pyqtSignal(str, str, str)
     _raw_step = pyqtSignal(str, str, object)
     _raw_complete = pyqtSignal(str, str, object)
     _raw_error = pyqtSignal(str, str, str)
+    _raw_retry = pyqtSignal(str, str, str)
 
     def __init__(self, client: LLMClient, mcp_manager: Optional[McpManager] = None, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._client = client
         self._mcp_manager = mcp_manager or client.mcp_manager
-        self._engine = MessageEngine(client=self._client, mcp_manager=self._mcp_manager)
+        self._engine = Task(client=self._client, mcp_manager=self._mcp_manager)
 
         self._streams: dict[str, ConversationStreamState] = {}
         self._last_request_id: dict[str, str] = {}
@@ -54,6 +56,7 @@ class MessageRuntime(QObject):
         self._raw_step.connect(self._on_raw_step)
         self._raw_complete.connect(self._on_raw_complete)
         self._raw_error.connect(self._on_raw_error)
+        self._raw_retry.connect(self._on_raw_retry)
 
     def is_streaming(self, conversation_id: str) -> bool:
         return bool(conversation_id) and conversation_id in self._streams
@@ -106,20 +109,26 @@ class MessageRuntime(QObject):
                     self._raw_step.emit(conversation_id, request_id, m)
 
                 async def run() -> None:
+                    def on_event(evt: TaskEvent) -> None:
+                        if evt.kind == TaskEventKind.STEP and isinstance(evt.data, Message):
+                            on_step(evt.data)
+                        elif evt.kind == TaskEventKind.RETRY:
+                            self._raw_retry.emit(conversation_id, request_id, evt.detail or "")
+
                     result = await self._engine.run(
                         provider=provider,
                         conversation=conversation_snapshot,
                         policy=policy,
+                        on_event=on_event,
                         on_token=on_token,
                         on_thinking=on_thinking,
-                        on_step=on_step,
                         cancel_event=state.cancel_event,
                         debug_log_path=debug_log_path,
                     )
-                    if result.status == "cancelled":
+                    if result.status == TaskStatus.CANCELLED:
                         self._raw_error.emit(conversation_id, request_id, "已取消生成")
                         return
-                    if result.status == "failed":
+                    if result.status == TaskStatus.FAILED:
                         self._raw_error.emit(conversation_id, request_id, result.error or "生成失败")
                         return
                     self._raw_complete.emit(conversation_id, request_id, result.final_message)
@@ -205,3 +214,8 @@ class MessageRuntime(QObject):
         except Exception:
             pass
         self.response_error.emit(conversation_id, request_id, error)
+
+    def _on_raw_retry(self, conversation_id: str, request_id: str, detail: str) -> None:
+        if not self._accept_event(conversation_id, request_id):
+            return
+        self.retry_attempt.emit(conversation_id, request_id, detail)

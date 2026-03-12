@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,8 @@ from core.prompts.history import get_effective_history, apply_context_window
 from core.config import AppConfig, load_app_config
 
 from utils.image_encoding import encode_image_file_to_data_url
+
+logger = logging.getLogger(__name__)
 
 
 def select_base_messages(conversation: Conversation, *, app_config: AppConfig | None = None) -> List[Message]:
@@ -37,6 +40,11 @@ def select_base_messages(conversation: Conversation, *, app_config: AppConfig | 
 
 def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict[str, Any]]:
     api_messages: List[Dict[str, Any]] = []
+
+    # Safety check: warn if no user messages in input
+    has_user = any(m.role == "user" for m in messages)
+    if not has_user:
+        logger.warning("build_api_messages: no user messages found — context may be corrupted")
 
     tool_result_by_id: Dict[str, str] = {}
     for m in messages:

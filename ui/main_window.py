@@ -18,6 +18,7 @@ from models.provider import Provider
 from services.storage_service import StorageService
 from core.llm.client import LLMClient
 from services.provider_service import ProviderService
+from core.commands import CommandRegistry
 from core.tools.manager import McpManager
 from ui.runtime.message_runtime import MessageRuntime
 from ui.runtime.prompt_optimizer_runtime import PromptOptimizer
@@ -43,6 +44,7 @@ class MainWindow(QMainWindow):
         self.client = LLMClient()
         self.provider_service = ProviderService()
         self.mcp_manager = McpManager()
+        self.command_registry = CommandRegistry()
         self.message_runtime = MessageRuntime(self.client, mcp_manager=self.mcp_manager, parent=self)
         
         self.providers: list[Provider] = []
@@ -56,6 +58,7 @@ class MainWindow(QMainWindow):
         self.message_runtime.response_step.connect(self._on_response_step)
         self.message_runtime.response_complete.connect(self._on_response_complete)
         self.message_runtime.response_error.connect(self._on_response_error)
+        self.message_runtime.retry_attempt.connect(self._on_retry_attempt)
 
         self.prompt_optimizer = PromptOptimizer(self.client, parent=self)
         self.prompt_optimizer.optimize_started.connect(self._on_prompt_optimize_started)
@@ -101,7 +104,10 @@ class MainWindow(QMainWindow):
         self.chat_view.images_dropped.connect(self._on_images_dropped)
         self.chat_view.work_dir_changed.connect(self._on_work_dir_changed)
         
-        self.input_area = InputArea()
+        self.input_area = InputArea(
+            command_registry=self.command_registry,
+            tool_schema_provider=self._get_input_available_tools,
+        )
         self.input_area.message_sent.connect(self._send_message)
         self.input_area.cancel_requested.connect(self._cancel_generation)
         self.input_area.conversation_settings_requested.connect(self._open_conversation_settings)
@@ -109,6 +115,7 @@ class MainWindow(QMainWindow):
         self.input_area.show_thinking_changed.connect(self._on_conversation_show_thinking_changed)
         self.input_area.prompt_optimize_requested.connect(self._on_prompt_optimize_requested)
         self.input_area.provider_model_changed.connect(self._on_input_provider_model_changed)
+        self.input_area.slash_command_result.connect(self._on_slash_command_result)
 
         # Vertical splitter: message area <-> input area (user-resizable)
         self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -136,6 +143,7 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(chat_widget)
         self.splitter.addWidget(self.stats_panel)
         self.splitter.setChildrenCollapsible(False)
+
         self.splitter.setHandleWidth(8)
         self.splitter.setSizes([180, 760, 200])
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
@@ -143,10 +151,20 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.splitter)
         self._create_menu_bar()
 
+    def _get_input_available_tools(self) -> list[dict]:
+        try:
+            mode_slug = self.input_area.get_selected_mode_slug()
+            mode = self.input_area._mode_manager.get(mode_slug)
+            return self.mcp_manager.registry.get_all_tool_schemas(
+                allowed_groups=mode.group_names(),
+            )
+        except Exception:
+            return []
+
     def _on_images_dropped(self, image_sources: list) -> None:
         # Forward images dropped onto the chat area into the input area's attachments.
         try:
-            self.input_area.add_images(image_sources)
+            self.input_area.add_attachments(image_sources)
         except Exception:
             pass
     
@@ -347,6 +365,7 @@ class MainWindow(QMainWindow):
             work_dir = getattr(conversation, 'work_dir', "")
             self.chat_view.update_work_dir(work_dir)
             self.input_area.set_work_dir(work_dir)
+            self.input_area.set_conversation(conversation)
 
             # Restore streaming UI if this conversation is currently generating.
             stream_state = self.message_runtime.get_state(conversation.id)
@@ -368,6 +387,7 @@ class MainWindow(QMainWindow):
         self.chat_view.update_header(provider_name="", model="", msg_count=0)
         self.chat_view.update_work_dir("")
         self.input_area.set_work_dir("")
+        self.input_area.set_conversation(self.current_conversation)
         self._sync_input_enabled()
 
     def _apply_task_ops(self, ops: list[dict]) -> None:
@@ -668,14 +688,24 @@ class MainWindow(QMainWindow):
 
         enable_thinking = bool((conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True)))
 
+        # Build retry config from global app settings.
+        retry_cfg = None
+        try:
+            from core.config.schema import RetryConfig
+            raw_retry = self._app_settings.get("retry")
+            if raw_retry and isinstance(raw_retry, dict):
+                retry_cfg = RetryConfig.from_dict(raw_retry)
+        except Exception:
+            pass
+
         # Build a RunPolicy from the UI (InputArea owns mode->policy mapping).
         try:
-            policy = self.input_area.build_run_policy(enable_thinking=enable_thinking)
+            policy = self.input_area.build_run_policy(enable_thinking=enable_thinking, retry_config=retry_cfg)
         except Exception:
             # Fallback: use the same core policy builder (no UI dependencies).
             try:
-                from core.agent.policy_builder import build_run_policy
-                from core.agent.modes.manager import ModeManager
+                from core.task.builder import build_run_policy
+                from core.modes.manager import ModeManager
 
                 mm = ModeManager(getattr(conversation, "work_dir", None) or None)
                 policy = build_run_policy(
@@ -686,7 +716,7 @@ class MainWindow(QMainWindow):
                     mode_manager=mm,
                 )
             except Exception:
-                from core.agent.policy import RunPolicy
+                from core.task.types import RunPolicy
 
                 policy = RunPolicy(mode="chat", enable_thinking=bool(enable_thinking))
 
@@ -791,29 +821,36 @@ class MainWindow(QMainWindow):
         """Handle intermediate message steps (tool calls/results)."""
         target_conv = self.current_conversation if (self.current_conversation and self.current_conversation.id == conversation_id) else self.storage.load_conversation(conversation_id)
         
-        if target_conv:
-            # Use add_message to handle tool result merging automatically
-            target_conv.add_message(message)
-            self.storage.save_conversation(target_conv)
-            
-            if self.current_conversation and self.current_conversation.id == conversation_id:
-                if message.role == "assistant":
-                    # For assistant step messages (with tool_calls), finish streaming and add to view
-                    self.chat_view.finish_streaming_response(message, add_to_view=True)
-                    # Re-start streaming for next turn (expecting tool results then more generation)
-                    state = self.message_runtime.get_state(conversation_id)
-                    if state:
-                        self.chat_view.start_streaming_response(model=state.model)
-                else:
-                    # Tool result message: just add to view
-                    self.chat_view.add_message(message)
+        if not target_conv:
+            return
 
-                # Tool steps may update SessionState (e.g., manage_state -> tasks).
-                # Refresh right panel immediately to keep it in sync.
-                try:
-                    self.stats_panel.update_stats(self.current_conversation)
-                except Exception:
-                    pass
+        # Dedup guard: skip if a message with the same seq_id already exists
+        msg_seq = getattr(message, 'seq_id', None)
+        if msg_seq and any(getattr(m, 'seq_id', None) == msg_seq for m in target_conv.messages):
+            return
+
+        # Use add_message to handle tool result merging automatically
+        target_conv.add_message(message)
+        self.storage.save_conversation(target_conv)
+        
+        if self.current_conversation and self.current_conversation.id == conversation_id:
+            if message.role == "assistant":
+                # For assistant step messages (with tool_calls), finish streaming and add to view
+                self.chat_view.finish_streaming_response(message, add_to_view=True)
+                # Re-start streaming for next turn (expecting tool results then more generation)
+                state = self.message_runtime.get_state(conversation_id)
+                if state:
+                    self.chat_view.start_streaming_response(model=state.model)
+            else:
+                # Tool result / nudge message: just add to view
+                self.chat_view.add_message(message)
+
+            # Tool steps may update SessionState (e.g., manage_state -> tasks).
+            # Refresh right panel immediately to keep it in sync.
+            try:
+                self.stats_panel.update_stats(self.current_conversation)
+            except Exception:
+                pass
 
     def _on_response_complete(self, conversation_id: str, request_id: str, response):
         """Handle response completion - called from main thread."""
@@ -914,10 +951,116 @@ class MainWindow(QMainWindow):
 
         self._sync_input_enabled()
     
+    def _on_retry_attempt(self, conversation_id: str, request_id: str, detail: str):
+        """Handle retry attempt notification from task engine."""
+        if self.current_conversation and self.current_conversation.id == conversation_id:
+            self.statusBar().showMessage(f"重试中: {detail}", 5000)
+
+    def _trigger_compact(self):
+        """Condense current conversation context via ContextCondenser."""
+        if not self.current_conversation:
+            return
+        conv = self.current_conversation
+        provider = None
+        for p in self.providers:
+            if p.id == conv.provider_id:
+                provider = p
+                break
+        if not provider:
+            self.statusBar().showMessage("未找到对应的 Provider，无法压缩上下文", 3000)
+            return
+        from core.context.condenser import ContextCondenser
+        condenser = ContextCondenser(self.client)
+        state = conv.get_state() if hasattr(conv, "get_state") else None
+        try:
+            condenser.condense_state(conv, provider, state)
+            self.storage.save_conversation(conv)
+            self._load_conversation_messages()
+            self.statusBar().showMessage("上下文已压缩", 3000)
+        except Exception as e:
+            self.statusBar().showMessage(f"压缩失败: {e}", 5000)
+
     def _cancel_generation(self):
         if not self.current_conversation:
             return
         self.message_runtime.cancel(self.current_conversation.id)
+
+    def _export_conversation(self, fmt: str = "markdown"):
+        """Export current conversation to a file."""
+        if not self.current_conversation:
+            return
+        from PyQt6.QtWidgets import QFileDialog
+        conv = self.current_conversation
+        default_name = (conv.title or "conversation").replace(" ", "_")
+
+        if fmt == "json":
+            path, _ = QFileDialog.getSaveFileName(self, "Export Conversation", f"{default_name}.json", "JSON (*.json)")
+            if path:
+                import json
+                data = conv.to_dict() if hasattr(conv, "to_dict") else {"messages": [m.to_dict() for m in conv.messages]}
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                self.statusBar().showMessage(f"已导出到 {path}", 3000)
+        else:
+            path, _ = QFileDialog.getSaveFileName(self, "Export Conversation", f"{default_name}.md", "Markdown (*.md)")
+            if path:
+                lines = [f"# {conv.title or 'Conversation'}\n"]
+                for msg in conv.messages:
+                    if msg.role == "system":
+                        continue
+                    role = msg.role.upper()
+                    content = msg.content or ""
+                    lines.append(f"## {role}\n\n{content}\n")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                self.statusBar().showMessage(f"已导出到 {path}", 3000)
+
+    def _on_slash_command_result(self, result):
+        """Handle CommandResult from InputArea slash commands."""
+        from core.commands import CommandAction, CommandResult
+
+        # Backwards compat: if somehow a raw string arrives, show it
+        if isinstance(result, str):
+            if self.current_conversation:
+                info_msg = Message(role="assistant", content=result)
+                self.current_conversation.messages.append(info_msg)
+                self.chat_view.add_message(info_msg)
+            return
+
+        if not isinstance(result, CommandResult):
+            return
+
+        if result.action == CommandAction.CLEAR:
+            self._new_conversation()
+        elif result.action == CommandAction.COMPACT:
+            self._trigger_compact()
+        elif result.action == CommandAction.MODE_SWITCH:
+            slug = result.data
+            if slug:
+                idx = self.input_area.mode_combo.findData(slug)
+                if idx >= 0:
+                    self.input_area.mode_combo.setCurrentIndex(idx)
+        elif result.action == CommandAction.SKILL:
+            skill_name = result.data
+            if skill_name and self.current_conversation:
+                settings = self.current_conversation.settings or {}
+                active = list(settings.get("active_skills") or [])
+                if skill_name not in active:
+                    active.append(skill_name)
+                settings["active_skills"] = active
+                self.current_conversation.settings = settings
+                self.storage.save_conversation(self.current_conversation)
+                info_msg = Message(role="assistant", content=f"\u2705 Skill **{skill_name}** activated for this conversation.")
+                self.current_conversation.messages.append(info_msg)
+                self.chat_view.add_message(info_msg)
+        elif result.action == CommandAction.EXPORT:
+            fmt = (result.data or "markdown").strip()
+            self._export_conversation(fmt)
+        elif result.action == CommandAction.DISPLAY and result.display_text:
+            if self.current_conversation:
+                info_msg = Message(role="assistant", content=result.display_text)
+                self.current_conversation.messages.append(info_msg)
+                self.chat_view.add_message(info_msg)
     
     def _edit_message(self, message_id: str):
         if not self.current_conversation:
@@ -1018,6 +1161,14 @@ class MainWindow(QMainWindow):
             self._app_settings['log_stream'] = dialog.get_log_stream()
             self._app_settings['proxy_url'] = dialog.get_proxy_url()
             self._app_settings.update(dialog.get_auto_approve_settings())
+
+            # Retry config
+            try:
+                retry_patch = dialog.get_retry_settings()
+                if retry_patch:
+                    self._app_settings["retry"] = retry_patch
+            except Exception:
+                pass
 
             # New: context defaults + prompt templates
             try:

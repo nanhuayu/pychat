@@ -91,6 +91,33 @@ class Task:
 
 
 @dataclass
+class SessionDocument:
+    """A session-level persistent document (plan, memory, notes, etc.).
+    
+    Documents survive context condensation and are always available
+    in the system prompt, providing persistent memory across turns.
+    """
+    name: str
+    content: str = ""
+    updated_seq: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'name': self.name,
+            'content': self.content,
+            'updated_seq': self.updated_seq,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'SessionDocument':
+        return cls(
+            name=data.get('name', ''),
+            content=data.get('content', ''),
+            updated_seq=data.get('updated_seq', 0),
+        )
+
+
+@dataclass
 class SessionState:
     """
     The "brain" of a conversation - holds cognitive state separate from message history.
@@ -110,6 +137,7 @@ class SessionState:
     summary: str = ""
     tasks: List[Task] = field(default_factory=list)
     memory: Dict[str, str] = field(default_factory=dict)
+    documents: Dict[str, SessionDocument] = field(default_factory=dict)
     archived_summaries: List[str] = field(default_factory=list)
     last_updated_seq: int = 0
 
@@ -118,6 +146,8 @@ class SessionState:
             'summary': self.summary,
             'tasks': [t.to_dict() for t in self.tasks],
             'memory': self.memory,
+            'documents': {k: v.to_dict() for k, v in self.documents.items()},
+            'archived_summaries': self.archived_summaries,
             'last_updated_seq': self.last_updated_seq
         }
 
@@ -126,10 +156,14 @@ class SessionState:
         if not data:
             return cls()
         tasks = [Task.from_dict(t) for t in data.get('tasks', [])]
+        docs_raw = data.get('documents', {})
+        documents = {k: SessionDocument.from_dict(v) for k, v in docs_raw.items()} if isinstance(docs_raw, dict) else {}
         return cls(
             summary=data.get('summary', ''),
             tasks=tasks,
             memory=data.get('memory', {}),
+            documents=documents,
+            archived_summaries=data.get('archived_summaries', []),
             last_updated_seq=data.get('last_updated_seq', 0)
         )
 
@@ -154,11 +188,11 @@ class SessionState:
         """
         blocks = []
         
-        # 1. Summary section
-        if self.summary:
-            blocks.append(f"### 📋 Context Summary\n{self.summary}")
+        # NOTE: Summary is NOT rendered here — it is injected separately
+        # at the end of the system prompt inside <conversation-summary> tags
+        # by system_builder.py to avoid duplication.
         
-        # 2. Active tasks section
+        # 1. Active tasks section
         active_tasks = self.get_active_tasks()
         if active_tasks:
             task_lines = ["### ✅ Active Tasks"]
@@ -170,7 +204,7 @@ class SessionState:
                 task_lines.append(f"- {status_icon} {priority_str} {t.content} {tags_str} [id:{t.id}]")
             blocks.append("\n".join(task_lines))
         
-        # 3. Memory section (key facts)
+        # 2. Memory section (key facts)
         if self.memory:
             mem_lines = ["### 💾 Remembered Facts"]
             for key, value in self.memory.items():
@@ -178,6 +212,14 @@ class SessionState:
                 display_value = value[:100] + "..." if len(value) > 100 else value
                 mem_lines.append(f"- **{key}**: {display_value}")
             blocks.append("\n".join(mem_lines))
+
+        # 3. Documents section
+        if self.documents:
+            doc_lines = ["### 📄 Session Documents"]
+            for name, doc in self.documents.items():
+                preview = (doc.content[:150] + "...") if len(doc.content) > 150 else doc.content
+                doc_lines.append(f"\n**{name}**:\n{preview}")
+            blocks.append("\n".join(doc_lines))
         
         if not blocks:
             return ""

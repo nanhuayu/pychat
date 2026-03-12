@@ -1,4 +1,4 @@
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Set
 import asyncio
 from core.tools.base import BaseTool, ToolContext, ToolResult
 
@@ -29,9 +29,25 @@ class ToolRegistry:
     def get_tool(self, name: str) -> Optional[BaseTool]:
         return self._tools.get(name)
 
-    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Get OpenAI-compatible schemas for all registered tools."""
-        return [tool.to_openai_tool() for tool in self._tools.values()]
+    def get_all_tool_schemas(
+        self,
+        *,
+        allowed_groups: Optional[Set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get OpenAI-compatible schemas, optionally filtered by group.
+
+        Parameters
+        ----------
+        allowed_groups
+            If provided, only return tools whose ``group`` is in this set.
+            ``None`` means return all tools (no filtering).
+        """
+        schemas: List[Dict[str, Any]] = []
+        for tool in self._tools.values():
+            if allowed_groups is not None and tool.group not in allowed_groups:
+                continue
+            schemas.append(tool.to_openai_tool())
+        return schemas
 
     def update_permissions(self, config: Dict[str, Any]):
         """Update permission settings."""
@@ -92,6 +108,10 @@ class ToolRegistry:
         )
         
         try:
-            return await tool.execute(arguments, wrapped_context)
+            result = await tool.execute(arguments, wrapped_context)
+            # Apply output truncation
+            if isinstance(result.content, str):
+                result.content = tool.truncate_output(result.content)
+            return result
         except Exception as e:
             return ToolResult(f"Tool execution error: {str(e)}", is_error=True)

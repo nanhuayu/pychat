@@ -23,9 +23,11 @@ class McpProxyTool(BaseTool):
 
     @property
     def category(self) -> str:
-        # MCP tools are generally considered "external" or "misc"
-        # unless we parse tags. Default to misc (requires approval unless policy says otherwise)
         return "misc"
+
+    @property
+    def group(self) -> str:
+        return "mcp"
 
     @property
     def input_schema(self) -> Dict[str, Any]:

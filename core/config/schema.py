@@ -123,6 +123,7 @@ class PromptsConfig:
     agent_tool_guidelines: str = ""
     include_environment: bool = True
     include_state: bool = True
+    file_tree_max_depth: int = 2
 
     @staticmethod
     def from_dict(data: Mapping[str, Any] | None) -> "PromptsConfig":
@@ -133,6 +134,7 @@ class PromptsConfig:
             agent_tool_guidelines=_as_str(d.get("agent_tool_guidelines"), "").strip(),
             include_environment=_as_bool(d.get("include_environment"), True),
             include_state=_as_bool(d.get("include_state"), True),
+            file_tree_max_depth=int(d.get("file_tree_max_depth", 2) or 2),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -142,6 +144,7 @@ class PromptsConfig:
             "agent_tool_guidelines": (self.agent_tool_guidelines or "").strip(),
             "include_environment": bool(self.include_environment),
             "include_state": bool(self.include_state),
+            "file_tree_max_depth": self.file_tree_max_depth,
         }
 
 
@@ -170,6 +173,30 @@ class PromptOptimizerConfig:
         return {
             "selected_template": self.selected_template or "default",
             "templates": dict(self.templates or {}),
+        }
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    """Global LLM retry policy configuration."""
+    max_retries: int = 3
+    base_delay: float = 1.0
+    backoff_factor: float = 2.0
+
+    @staticmethod
+    def from_dict(data: Mapping[str, Any] | None) -> "RetryConfig":
+        d = _as_dict(dict(data) if data is not None else {})
+        return RetryConfig(
+            max_retries=int(_as_float(d.get("max_retries"), 3)),
+            base_delay=float(_as_float(d.get("base_delay"), 1.0)),
+            backoff_factor=float(_as_float(d.get("backoff_factor"), 2.0)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "max_retries": self.max_retries,
+            "base_delay": self.base_delay,
+            "backoff_factor": self.backoff_factor,
         }
 
 
@@ -210,6 +237,7 @@ class AppConfig:
 
     # Feature configs
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
+    retry: RetryConfig = field(default_factory=RetryConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     prompt_optimizer: PromptOptimizerConfig = field(default_factory=PromptOptimizerConfig)
@@ -244,6 +272,7 @@ class AppConfig:
             splitter_sizes=_sizes(d.get("splitter_sizes")),
             chat_splitter_sizes=_sizes(d.get("chat_splitter_sizes")),
             permissions=PermissionsConfig.from_dict(permissions_src),
+            retry=RetryConfig.from_dict(_as_dict(d.get("retry"))),
             context=ContextConfig.from_dict(_as_dict(d.get("context"))),
             prompts=PromptsConfig.from_dict(_as_dict(d.get("prompts"))),
             prompt_optimizer=PromptOptimizerConfig.from_dict(_as_dict(d.get("prompt_optimizer"))),

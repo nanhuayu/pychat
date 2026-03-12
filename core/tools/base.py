@@ -65,23 +65,39 @@ class ToolContext:
         return candidate
 
 class BaseTool(ABC):
-    """Abstract base class for all tools (System & MCP)."""
-    
+    """Abstract base class for all tools (System & MCP).
+
+    Each tool declares:
+    - ``group``: which tool-group it belongs to (maps to mode.groups).
+      One of ``"read"``, ``"edit"``, ``"command"``, ``"search"``,
+      ``"browser"``, ``"mcp"``, ``"modes"``.
+    - ``category``: permission category (``"read"``/``"edit"``/``"command"``/``"misc"``).
+    """
+
+    # Max output chars before truncation (0 = no limit)
+    max_output_chars: int = 60_000
+
     @property
     @abstractmethod
     def name(self) -> str:
-        """The unique name of the tool."""
         pass
 
     @property
     @abstractmethod
     def description(self) -> str:
-        """Description for the LLM."""
         pass
 
     @property
+    def group(self) -> str:
+        """Tool group for mode-based filtering.
+
+        Override in subclasses. Defaults to same as ``category``.
+        """
+        return self.category
+
+    @property
     def category(self) -> str:
-        """Category for permission checking: 'read', 'edit', 'command', 'misc'."""
+        """Permission category: 'read', 'edit', 'command', 'misc'."""
         return "misc"
 
     @property
@@ -94,6 +110,17 @@ class BaseTool(ABC):
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         """Execute the tool logic."""
         pass
+
+    def truncate_output(self, text: str) -> str:
+        """Truncate tool output if it exceeds max_output_chars."""
+        if self.max_output_chars <= 0 or len(text) <= self.max_output_chars:
+            return text
+        half = self.max_output_chars // 2
+        return (
+            text[:half]
+            + f"\n\n... [truncated {len(text) - self.max_output_chars} chars] ...\n\n"
+            + text[-half:]
+        )
 
     def to_openai_tool(self) -> Dict[str, Any]:
         """Convert to OpenAI tool format."""

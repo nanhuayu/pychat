@@ -9,8 +9,8 @@ from models.provider import Provider
 from utils.file_context import get_file_tree
 
 from core.config.schema import AppConfig
-from core.agent.modes.manager import resolve_mode_config
-from core.agent.modes.types import normalize_mode_slug
+from core.modes.manager import resolve_mode_config
+from core.modes.types import normalize_mode_slug
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -26,16 +26,18 @@ DEFAULT_AGENT_TOOL_GUIDELINES = (
 )
 
 
-def build_environment_section(work_dir: str) -> str:
+def build_environment_section(work_dir: str, max_depth: int = 2) -> str:
     os_info = platform.system() + " " + platform.release()
-    file_tree = get_file_tree(work_dir, max_depth=2)
+    file_tree = get_file_tree(work_dir, max_depth=max_depth)
     parts = [
-        "## Environment",
-        f"- OS: {os_info}",
-        f"- WorkDir: {os.path.abspath(work_dir)}",
+        "<environment_info>",
+        f"OS: {os_info}",
+        f"WorkDir: {os.path.abspath(work_dir)}",
+        "</environment_info>",
         "",
-        "## Workspace",
+        "<workspace_info>",
         file_tree or "(empty)",
+        "</workspace_info>",
     ]
     return "\n".join(parts).strip()
 
@@ -99,7 +101,20 @@ def build_system_prompt(
         parts.append(DEFAULT_AGENT_TOOL_GUIDELINES)
 
     if bool(prompt_cfg.include_environment):
-        parts.append(build_environment_section(str(work_dir)))
+        max_depth = max(1, int(prompt_cfg.file_tree_max_depth or 2))
+        parts.append(build_environment_section(str(work_dir), max_depth=max_depth))
+
+    # Inject available tools summary
+    if tools:
+        tool_lines = ["<available_tools>"]
+        for t in tools:
+            fn = t.get("function", {})
+            tname = fn.get("name", "")
+            tdesc = (fn.get("description") or "")[:100]
+            if tname:
+                tool_lines.append(f"- {tname}: {tdesc}")
+        tool_lines.append("</available_tools>")
+        parts.append("\n".join(tool_lines))
 
     if bool(prompt_cfg.include_state):
         state_section = build_state_section(conversation)
@@ -111,5 +126,27 @@ def build_system_prompt(
     ).strip()
     if combined_custom:
         parts.append(f"## Custom Instructions\n{combined_custom}")
+
+    # Inject active skills
+    active_skills = (settings.get("active_skills") or [])
+    if active_skills:
+        from core.skills import SkillsManager
+        mgr = SkillsManager()
+        for skill_name in active_skills:
+            content = mgr.get_content(str(skill_name))
+            if content:
+                parts.append(f'<skill name="{skill_name}">\n{content}\n</skill>')
+
+    # Inject conversation summary at the end of the system prompt
+    try:
+        state = conversation.get_state()
+        if state.summary:
+            parts.append(
+                "<conversation-summary>\n"
+                f"{state.summary}\n"
+                "</conversation-summary>"
+            )
+    except Exception:
+        pass
 
     return "\n\n".join([p for p in parts if isinstance(p, str) and p.strip()]).strip()

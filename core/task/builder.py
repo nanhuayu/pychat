@@ -1,10 +1,15 @@
+"""Build RunPolicy from mode slug + feature toggles.
+
+Pure core helper (no Qt) — reusable by CLI/TUI.
+"""
 from __future__ import annotations
 
 from typing import Optional
 
-from core.agent.policy import RunPolicy
-from core.agent.modes.features import clamp_feature_flags, get_mode_feature_policy
-from core.agent.modes.manager import ModeManager, resolve_mode_config
+from core.task.types import RetryPolicy, RunPolicy
+from core.modes.features import clamp_feature_flags, get_mode_feature_policy
+from core.modes.manager import ModeManager, resolve_mode_config
+from core.config.schema import RetryConfig
 
 
 def build_run_policy(
@@ -14,25 +19,20 @@ def build_run_policy(
     enable_search: Optional[bool] = None,
     enable_mcp: Optional[bool] = None,
     mode_manager: Optional[ModeManager] = None,
+    retry_config: Optional[RetryConfig] = None,
 ) -> RunPolicy:
     """Build a RunPolicy from mode + feature toggles.
 
-    Pure core helper (no Qt) so TUI/CLI can reuse it.
-
-    Behavior:
     - Apply mode feature-policy clamping to tool flags.
-    - Determine agent-like vs chat-like default policy.
-    - Preserve the provided mode_slug in the returned policy.
+    - Determine defaults from mode groups.
+    - Return an immutable RunPolicy.
     """
-
     slug = (mode_slug or "chat").strip() or "chat"
 
-    # Resolve mode config (always falls back to chat).
     mode_cfg = resolve_mode_config(slug, mode_manager=mode_manager)
 
-    # Runtime defaults (kept intentionally tiny).
     max_turns = 20
-    context_window_limit = 100000
+    context_window_limit = 100_000
     auto_compress_enabled = None
 
     # Derive defaults from mode feature policy when caller passes None.
@@ -68,7 +68,14 @@ def build_run_policy(
         enable_search = bool(enable_search)
         enable_mcp = bool(enable_mcp)
 
-    # Build final policy.
+    retry = RetryPolicy()
+    if retry_config is not None:
+        retry = RetryPolicy(
+            max_retries=retry_config.max_retries,
+            base_delay=retry_config.base_delay,
+            backoff_factor=retry_config.backoff_factor,
+        )
+
     return RunPolicy(
         mode=str(slug),
         max_turns=int(max_turns),
@@ -77,6 +84,6 @@ def build_run_policy(
         enable_search=bool(enable_search),
         enable_mcp=bool(enable_mcp),
         tool_allowlist=None,
+        retry=retry,
         auto_compress_enabled=auto_compress_enabled,
     )
-

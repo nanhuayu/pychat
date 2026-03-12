@@ -100,10 +100,6 @@ def build_system_prompt(
     else:
         parts.append(DEFAULT_AGENT_TOOL_GUIDELINES)
 
-    if bool(prompt_cfg.include_environment):
-        max_depth = max(1, int(prompt_cfg.file_tree_max_depth or 2))
-        parts.append(build_environment_section(str(work_dir), max_depth=max_depth))
-
     # Inject available tools summary
     if tools:
         tool_lines = ["<available_tools>"]
@@ -130,12 +126,12 @@ def build_system_prompt(
     # Inject active skills
     active_skills = (settings.get("active_skills") or [])
     if active_skills:
-        from core.skills import SkillsManager
-        mgr = SkillsManager()
-        for skill_name in active_skills:
-            content = mgr.get_content(str(skill_name))
-            if content:
-                parts.append(f'<skill name="{skill_name}">\n{content}\n</skill>')
+        from core.skills import resolve_active_skills
+        for skill in resolve_active_skills(
+            active_skills,
+            work_dir=getattr(conversation, "work_dir", ".") or ".",
+        ):
+            parts.append(f'<skill name="{skill.name}">\n{skill.content}\n</skill>')
 
     # Inject conversation summary at the end of the system prompt
     try:

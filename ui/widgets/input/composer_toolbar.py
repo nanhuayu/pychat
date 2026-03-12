@@ -1,0 +1,112 @@
+"""Composer toolbar extracted from input_area.py."""
+from __future__ import annotations
+
+from PyQt6.QtWidgets import (
+    QComboBox, QHBoxLayout, QSizePolicy, QToolButton, QWidget,
+)
+from PyQt6.QtCore import pyqtSignal
+
+
+class ComposerToolbar(QWidget):
+    """Toolbar widget for provider/model/mode controls."""
+
+    attach_requested = pyqtSignal()
+    conversation_settings_requested = pyqtSignal()
+    provider_settings_requested = pyqtSignal()
+    prompt_optimize_requested = pyqtSignal()
+    send_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.attach_btn = self._make_button("📎", "添加文件/图片")
+        self.attach_btn.clicked.connect(self.attach_requested.emit)
+        layout.addWidget(self.attach_btn)
+
+        self.provider_combo = QComboBox()
+        self.provider_combo.setObjectName("provider_combo")
+        self.provider_combo.setMinimumWidth(70)
+        self.provider_combo.setMaximumWidth(110)
+        layout.addWidget(self.provider_combo)
+
+        self.model_combo = QComboBox()
+        self.model_combo.setObjectName("model_combo")
+        self.model_combo.setMinimumWidth(120)
+        self.model_combo.setMaximumWidth(200)
+        self.model_combo.setEditable(True)
+        layout.addWidget(self.model_combo)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("mode_combo")
+        self.mode_combo.setMinimumWidth(70)
+        self.mode_combo.setToolTip("选择对话模式")
+        layout.addWidget(self.mode_combo)
+
+        self.thinking_toggle = self._make_toggle("🧠", "显示思考过程")
+        layout.addWidget(self.thinking_toggle)
+
+        self.mcp_toggle = self._make_toggle("🔌", "启用 MCP 工具")
+        layout.addWidget(self.mcp_toggle)
+
+        self.search_toggle = self._make_toggle("🔍", "启用网络搜索")
+        layout.addWidget(self.search_toggle)
+
+        self.conv_settings_btn = self._make_button("⚙", "对话设置 (采样参数/系统提示)")
+        self.conv_settings_btn.clicked.connect(self.conversation_settings_requested.emit)
+        layout.addWidget(self.conv_settings_btn)
+
+        self.provider_settings_btn = self._make_button("🔧", "配置服务商 (API/Key/模型列表)")
+        self.provider_settings_btn.clicked.connect(self.provider_settings_requested.emit)
+        layout.addWidget(self.provider_settings_btn)
+
+        layout.addStretch()
+
+        self.prompt_optimize_btn = self._make_button("✨", "优化提示词")
+        self.prompt_optimize_btn.clicked.connect(self.prompt_optimize_requested.emit)
+        layout.addWidget(self.prompt_optimize_btn)
+
+        self.send_btn = self._make_button("➤", "发送消息 (Ctrl+Enter)")
+        self.send_btn.clicked.connect(self.send_requested.emit)
+        layout.addWidget(self.send_btn)
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _make_button(self, text: str, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("toolbar_btn")
+        button.setText(text)
+        button.setToolTip(tooltip)
+        return button
+
+    def _make_toggle(self, text: str, tooltip: str) -> QToolButton:
+        button = self._make_button(text, tooltip)
+        button.setCheckable(True)
+        return button
+
+    def set_streaming_state(self, is_streaming: bool, style) -> None:
+        if is_streaming:
+            try:
+                self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_MediaStop))
+            except Exception:
+                pass
+            self.send_btn.setToolTip("停止生成")
+            self.prompt_optimize_btn.setEnabled(False)
+            self.mcp_toggle.setEnabled(False)
+            self.search_toggle.setEnabled(False)
+            return
+
+        try:
+            self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_ArrowRight))
+        except Exception:
+            pass
+        self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
+
+    def set_prompt_optimize_busy(self, busy: bool, *, is_streaming: bool) -> None:
+        self.prompt_optimize_btn.setEnabled((not busy) and (not is_streaming))
+        self.prompt_optimize_btn.setToolTip("优化中..." if busy else "优化提示词")

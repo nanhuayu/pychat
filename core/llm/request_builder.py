@@ -16,20 +16,24 @@ logger = logging.getLogger(__name__)
 
 
 def select_base_messages(conversation: Conversation, *, app_config: AppConfig | None = None) -> List[Message]:
-    # Get effective history (filters condensed/truncated messages)
-    messages = get_effective_history(conversation.messages)
-    
-    settings = conversation.settings or {}
-    max_ctx = settings.get("max_context_messages")
-    if isinstance(max_ctx, int) and max_ctx > 0:
-        return apply_context_window(messages, max_ctx)
-
     cfg = app_config
     if cfg is None:
         try:
             cfg = load_app_config()
         except Exception:
             cfg = AppConfig()
+
+    keep_last_turns = int(
+        getattr(getattr(cfg, "context", None), "compression_policy", None).keep_last_n
+        if getattr(getattr(cfg, "context", None), "compression_policy", None)
+        else 3
+    )
+    messages = get_effective_history(conversation.messages, keep_last_turns=keep_last_turns)
+
+    settings = conversation.settings or {}
+    max_ctx = settings.get("max_context_messages")
+    if isinstance(max_ctx, int) and max_ctx > 0:
+        return apply_context_window(messages, max_ctx)
 
     default_max_ctx = int(getattr(getattr(cfg, "context", None), "default_max_context_messages", 0) or 0)
     if default_max_ctx > 0:
@@ -163,36 +167,34 @@ def build_request_body(
         stream_enabled = bool(stream_enabled)
     except Exception:
         stream_enabled = True
-    # System prompt selection
-    system_prompt_override = (settings or {}).get("system_prompt_override")
-    if isinstance(system_prompt_override, str) and system_prompt_override.strip():
-        system_prompt_content = system_prompt_override.strip()
-    else:
-        # Use PromptManager to generate the system prompt
-        work_dir = getattr(conversation, "work_dir", ".")
-        prompt_manager = PromptManager(work_dir)
-        cfg = app_config
-        if cfg is None:
-            try:
-                cfg = load_app_config()
-            except Exception:
-                cfg = AppConfig()
-
-        # Generate structured system prompt
-        system_prompt_content = prompt_manager.get_system_prompt(conversation, tools or [], provider, app_config=cfg)
-    
-    # Inject into api_messages
-    # 1. Find existing system message (from effective history)
+    # Respect a pre-assembled system message if the caller already prepared one.
     system_msg_index = -1
     for i, msg in enumerate(api_messages):
         if msg.get("role") == "system":
             system_msg_index = i
             break
-            
-    if system_msg_index >= 0:
-        # Update existing system message
-        api_messages[system_msg_index]["content"] = system_prompt_content
-    else:
+
+    if system_msg_index < 0:
+        system_prompt_override = (settings or {}).get("system_prompt_override")
+        if isinstance(system_prompt_override, str) and system_prompt_override.strip():
+            system_prompt_content = system_prompt_override.strip()
+        else:
+            work_dir = getattr(conversation, "work_dir", ".")
+            prompt_manager = PromptManager(work_dir)
+            cfg = app_config
+            if cfg is None:
+                try:
+                    cfg = load_app_config()
+                except Exception:
+                    cfg = AppConfig()
+
+            system_prompt_content = prompt_manager.get_system_prompt(
+                conversation,
+                tools or [],
+                provider,
+                app_config=cfg,
+            )
+
         # Insert new system message at the beginning
         api_messages.insert(0, {
             "role": "system",

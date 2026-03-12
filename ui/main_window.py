@@ -2,9 +2,8 @@
 Main application window - Chinese UI with fixed streaming
 """
 
+import logging
 import os
-import uuid
-from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QMessageBox
@@ -15,11 +14,7 @@ from typing import Optional
 
 from models.conversation import Conversation, Message
 from models.provider import Provider
-from services.storage_service import StorageService
-from core.llm.client import LLMClient
-from services.provider_service import ProviderService
-from core.commands import CommandRegistry
-from core.tools.manager import McpManager
+from core.container import AppContainer
 from ui.runtime.message_runtime import MessageRuntime
 from ui.runtime.prompt_optimizer_runtime import PromptOptimizer
 
@@ -30,8 +25,12 @@ from .widgets.stats_panel import StatsPanel
 
 from core.state.services.task_service import TaskService
 from .settings.settings_dialog import SettingsDialog
-from .dialogs.message_editor import MessageEditorDialog
 from .dialogs.conversation_settings_dialog import ConversationSettingsDialog
+from .presenters.conversation_presenter import ConversationPresenter
+from .presenters.message_presenter import MessagePresenter
+from .presenters.settings_presenter import SettingsPresenter
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -39,13 +38,19 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        
-        self.storage = StorageService()
-        self.client = LLMClient()
-        self.provider_service = ProviderService()
-        self.mcp_manager = McpManager()
-        self.command_registry = CommandRegistry()
+
+        # Centralized dependency container
+        self._container = AppContainer()
+        self.storage = self._container.storage
+        self.client = self._container.client
+        self.provider_service = self._container.provider_service
+        self.mcp_manager = self._container.mcp_manager
+        self.command_registry = self._container.command_registry
         self.message_runtime = MessageRuntime(self.client, mcp_manager=self.mcp_manager, parent=self)
+
+        # Service layer
+        self.conv_service = self._container.conv_service
+        self.context_service = self._container.context_service
         
         self.providers: list[Provider] = []
         self.current_conversation: Optional[Conversation] = None
@@ -64,6 +69,11 @@ class MainWindow(QMainWindow):
         self.prompt_optimizer.optimize_started.connect(self._on_prompt_optimize_started)
         self.prompt_optimizer.optimize_complete.connect(self._on_prompt_optimize_complete)
         self.prompt_optimizer.optimize_error.connect(self._on_prompt_optimize_error)
+
+        # Presenters — extract business logic out of this God Object
+        self._conv_presenter = ConversationPresenter(self)
+        self._msg_presenter = MessagePresenter(self)
+        self._settings_presenter = SettingsPresenter(self)
         
         self._setup_ui()
         self._load_data()
@@ -158,15 +168,16 @@ class MainWindow(QMainWindow):
             return self.mcp_manager.registry.get_all_tool_schemas(
                 allowed_groups=mode.group_names(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get tool schemas for input: %s", e)
             return []
 
     def _on_images_dropped(self, image_sources: list) -> None:
         # Forward images dropped onto the chat area into the input area's attachments.
         try:
             self.input_area.add_attachments(image_sources)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to add dropped images: %s", e)
     
     def _create_menu_bar(self):
         menubar = self.menuBar()
@@ -230,7 +241,7 @@ class MainWindow(QMainWindow):
         
         self.input_area.set_providers(self.providers)
         
-        conversations = self.storage.list_conversations()
+        conversations = self.conv_service.list_all()
         self.sidebar.update_conversations(conversations)
 
         # Apply appearance settings that don't depend on QSS
@@ -243,31 +254,31 @@ class MainWindow(QMainWindow):
         if isinstance(sizes, list) and len(sizes) == 3 and all(isinstance(x, int) for x in sizes):
             try:
                 self.splitter.setSizes(sizes)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to restore splitter sizes: %s", e)
 
         # Restore chat splitter sizes (messages/input)
         chat_sizes = self._app_settings.get('chat_splitter_sizes')
         if isinstance(chat_sizes, list) and len(chat_sizes) == 2 and all(isinstance(x, int) for x in chat_sizes):
             try:
                 self.chat_splitter.setSizes(chat_sizes)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to restore chat splitter sizes: %s", e)
 
     def _on_splitter_moved(self, pos: int, index: int):
         # Persist user layout immediately
         try:
             self._app_settings['splitter_sizes'] = [int(x) for x in self.splitter.sizes()]
             self.storage.save_settings(self._app_settings)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to persist splitter layout: %s", e)
 
     def _on_chat_splitter_moved(self, pos: int, index: int):
         try:
             self._app_settings['chat_splitter_sizes'] = [int(x) for x in self.chat_splitter.sizes()]
             self.storage.save_settings(self._app_settings)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to persist chat splitter layout: %s", e)
 
     def _sync_input_enabled(self) -> None:
         """Enable/disable input for the currently selected conversation only."""
@@ -277,118 +288,20 @@ class MainWindow(QMainWindow):
                 return
             is_streaming = self.message_runtime.is_streaming(self.current_conversation.id)
             self.input_area.set_streaming_state(is_streaming)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to sync input enabled state: %s", e)
     
     def _apply_theme(self):
-        try:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            theme = (self._app_settings.get('theme') or 'dark').lower()
-            theme_file = 'light_theme.qss' if theme == 'light' else 'dark_theme.qss'
-            theme_path = os.path.join(base_dir, 'assets', 'styles', theme_file)
-            base_theme_path = os.path.join(base_dir, 'assets', 'styles', 'base.qss')
-            
-            parts: list[str] = []
-            if os.path.exists(base_theme_path):
-                with open(base_theme_path, 'r', encoding='utf-8') as f:
-                    parts.append(f.read())
-            if os.path.exists(theme_path):
-                with open(theme_path, 'r', encoding='utf-8') as f:
-                    parts.append(f.read())
-
-            if parts:
-                self.setStyleSheet("\n\n".join(parts))
-        except Exception as e:
-            print(f"Error loading theme: {e}")
+        self._settings_presenter.apply_theme()
 
     def _apply_proxy(self):
-        """Update environment variables for HTTP proxy"""
-        proxy = self._app_settings.get('proxy_url', '').strip()
-        if proxy:
-            os.environ['HTTP_PROXY'] = proxy
-            os.environ['HTTPS_PROXY'] = proxy
-        else:
-            os.environ.pop('HTTP_PROXY', None)
-            os.environ.pop('HTTPS_PROXY', None)
+        self._settings_presenter.apply_proxy()
     
     def _on_conversation_selected(self, conversation_id: str):
-        conversation = self.storage.load_conversation(conversation_id)
-        if not conversation:
-            return
-
-        self._syncing_input_selection = True
-        try:
-            self.current_conversation = conversation
-            self.chat_view.load_conversation(conversation)
-            self.stats_panel.update_stats(conversation)
-
-            # Sync per-conversation toggles
-            show_thinking_default = bool(self._app_settings.get('show_thinking', True))
-            show_thinking = bool((conversation.settings or {}).get('show_thinking', show_thinking_default))
-            self.input_area.set_show_thinking(show_thinking)
-
-            # Sync provider first (so model list is populated), then sync model.
-            provider_name = ""
-            if conversation.provider_id:
-                for i, provider in enumerate(self.providers):
-                    if provider.id == conversation.provider_id:
-                        self.input_area.provider_combo.setCurrentIndex(i)
-                        provider_name = provider.name
-                        break
-
-            if conversation.model:
-                self.input_area.model_combo.setCurrentText(conversation.model)
-
-            # Sync mode selection
-            try:
-                mode_slug = str(getattr(conversation, 'mode', '') or '')
-                idx = self.input_area.mode_combo.findData(mode_slug)
-                if idx >= 0:
-                    self.input_area.mode_combo.blockSignals(True)
-                    try:
-                        self.input_area.mode_combo.setCurrentIndex(idx)
-                    finally:
-                        self.input_area.mode_combo.blockSignals(False)
-                    try:
-                        self.input_area.apply_mode_policy(apply_defaults=False)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            # Update chat header
-            self.chat_view.update_header(
-                provider_name=provider_name,
-                model=conversation.model or "",
-                msg_count=len(conversation.messages)
-            )
-            work_dir = getattr(conversation, 'work_dir', "")
-            self.chat_view.update_work_dir(work_dir)
-            self.input_area.set_work_dir(work_dir)
-            self.input_area.set_conversation(conversation)
-
-            # Restore streaming UI if this conversation is currently generating.
-            stream_state = self.message_runtime.get_state(conversation.id)
-            if stream_state:
-                self.chat_view.start_streaming_response(model=stream_state.model)
-                self.chat_view.restore_streaming_state(
-                    visible_text=stream_state.visible_text,
-                    thinking_text=stream_state.thinking_text
-                )
-
-            self._sync_input_enabled()
-        finally:
-            self._syncing_input_selection = False
+        self._conv_presenter.select(conversation_id)
 
     def _new_conversation(self):
-        self.current_conversation = Conversation()
-        self.chat_view.clear()
-        self.stats_panel.update_stats(None)
-        self.chat_view.update_header(provider_name="", model="", msg_count=0)
-        self.chat_view.update_work_dir("")
-        self.input_area.set_work_dir("")
-        self.input_area.set_conversation(self.current_conversation)
-        self._sync_input_enabled()
+        self._conv_presenter.new()
 
     def _apply_task_ops(self, ops: list[dict]) -> None:
         if not self.current_conversation:
@@ -399,14 +312,15 @@ class MainWindow(QMainWindow):
             TaskService.handle_ops(state, ops, current_seq)
             state.last_updated_seq = current_seq
             self.current_conversation.set_state(state)
-            self.storage.save_conversation(self.current_conversation)
-        except Exception:
+            self.conv_service.save(self.current_conversation)
+        except Exception as e:
+            logger.warning("Failed to apply task operations: %s", e)
             return
 
         try:
             self.stats_panel.update_stats(self.current_conversation)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to update stats after task ops: %s", e)
 
     def _on_task_create_requested(self, content: str) -> None:
         text = (content or "").strip()
@@ -435,20 +349,22 @@ class MainWindow(QMainWindow):
                 if getattr(p, 'id', '') == provider_id:
                     provider_name = getattr(p, 'name', '') or ''
                     break
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get provider name: %s", e)
             provider_name = ''
 
         msg_count = 0
         if self.current_conversation:
             try:
                 msg_count = len(self.current_conversation.messages)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to get message count: %s", e)
                 msg_count = 0
 
         try:
             self.chat_view.update_header(provider_name=provider_name, model=(model or ''), msg_count=msg_count)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to update chat header: %s", e)
 
         if not self.current_conversation:
             return
@@ -459,80 +375,43 @@ class MainWindow(QMainWindow):
                 self.current_conversation.provider_id = provider_id
             if isinstance(model, str):
                 self.current_conversation.model = model.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to update conversation provider/model: %s", e)
 
         try:
             self.stats_panel.update_stats(self.current_conversation)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to update stats panel: %s", e)
 
         try:
             if getattr(self.current_conversation, 'messages', None):
-                self.storage.save_conversation(self.current_conversation)
-        except Exception:
-            pass
+                self.conv_service.save(self.current_conversation)
+        except Exception as e:
+            logger.warning("Failed to save conversation: %s", e)
 
     def _on_work_dir_changed(self, path: str):
         """Handle workspace directory change"""
         if self.current_conversation:
             self.current_conversation.work_dir = path
             self.input_area.set_work_dir(path)
-            self.storage.save_conversation(self.current_conversation)
+            self.conv_service.save(self.current_conversation)
             # Maybe show a toast or status bar message?
     
     def _import_conversation(self, file_path: str):
-        conversation = self.storage.import_conversation(file_path)
-        if conversation:
-            conversations = self.storage.list_conversations()
-            self.sidebar.update_conversations(conversations)
-            self.sidebar.select_conversation(conversation.id)
-            self._on_conversation_selected(conversation.id)
-            QMessageBox.information(self, "导入成功", f"已导入会话: {conversation.title}")
-        else:
-            QMessageBox.warning(self, "导入失败", "无法导入会话，请检查 JSON 格式")
+        self._conv_presenter.import_from_file(file_path)
     
     def _delete_conversation(self, conversation_id: str):
-        if self.storage.delete_conversation(conversation_id):
-            conversations = self.storage.list_conversations()
-            self.sidebar.update_conversations(conversations)
-            
-            if self.current_conversation and self.current_conversation.id == conversation_id:
-                self.current_conversation = None
-                self.chat_view.clear()
-                self.stats_panel.update_stats(None)
+        self._conv_presenter.delete(conversation_id)
 
     def _duplicate_conversation(self, conversation_id: str) -> None:
-        src = self.storage.load_conversation(conversation_id)
-        if not src:
-            QMessageBox.warning(self, "复制失败", "未找到要复制的会话")
-            return
-
-        # Deep copy via dict roundtrip (keeps messages/settings intact)
-        dup = Conversation.from_dict(src.to_dict())
-        dup.id = str(uuid.uuid4())
-        now = datetime.now()
-        dup.created_at = now
-        dup.updated_at = now
-
-        base_title = (src.title or "New Chat").strip() or "New Chat"
-        dup.title = f"{base_title}（副本）"
-
-        if not self.storage.save_conversation(dup):
-            QMessageBox.warning(self, "复制失败", "保存会话副本失败")
-            return
-
-        conversations = self.storage.list_conversations()
-        self.sidebar.update_conversations(conversations)
-        self.sidebar.select_conversation(dup.id)
-        self._on_conversation_selected(dup.id)
+        self._conv_presenter.duplicate(conversation_id)
     
     def _on_prompt_optimize_started(self, conversation_id: str, request_id: str) -> None:
         if self.current_conversation and self.current_conversation.id == conversation_id:
             try:
                 self.input_area.set_prompt_optimize_busy(True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to set prompt optimize busy state: %s", e)
 
     def _on_prompt_optimize_complete(self, conversation_id: str, request_id: str, text: str) -> None:
         if not self.current_conversation or self.current_conversation.id != conversation_id:
@@ -544,16 +423,16 @@ class MainWindow(QMainWindow):
             cursor.movePosition(cursor.MoveOperation.End)
             self.input_area.text_input.setTextCursor(cursor)
             self.input_area.text_input.setFocus()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to apply optimized prompt: %s", e)
 
     def _on_prompt_optimize_error(self, conversation_id: str, request_id: str, err: str) -> None:
         if not self.current_conversation or self.current_conversation.id != conversation_id:
             return
         try:
             self.input_area.set_prompt_optimize_busy(False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to reset prompt optimize busy: %s", e)
         QMessageBox.warning(self, '提示词优化失败', err or '未知错误')
 
     def _on_prompt_optimize_requested(self, raw_text: str) -> None:
@@ -571,12 +450,7 @@ class MainWindow(QMainWindow):
         provider_id = self.input_area.get_selected_provider_id()
         base_model = self.input_area.get_selected_model()
 
-        provider = None
-        for p in self.providers:
-            if p.id == provider_id:
-                provider = p
-                break
-
+        provider = self.conv_service.find_provider(self.providers, provider_id)
         if not provider:
             QMessageBox.warning(self, '错误', '请先在设置中配置服务商')
             return
@@ -596,7 +470,8 @@ class MainWindow(QMainWindow):
                 templates = po.get("templates") if isinstance(po.get("templates"), dict) else {}
                 sel = (po.get("selected_template") or "default")
                 opt_sys = (templates.get(sel) or "").strip() or None
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to get prompt optimizer template: %s", e)
                 opt_sys = None
 
         self.prompt_optimizer.start(
@@ -608,161 +483,16 @@ class MainWindow(QMainWindow):
         )
 
     def _send_message(self, content: str, images: list):
-        if not self.current_conversation:
-            self.current_conversation = Conversation()
-
-        # Per-conversation concurrency: block only if THIS conversation is generating.
-        if self.message_runtime.is_streaming(self.current_conversation.id):
-            QMessageBox.information(self, "提示", "当前会话正在生成中，请稍候或先取消生成。")
-            return
-        
-        provider_id = self.input_area.get_selected_provider_id()
-        model = self.input_area.get_selected_model()
-        
-        provider = None
-        for p in self.providers:
-            if p.id == provider_id:
-                provider = p
-                break
-        
-        if not provider:
-            QMessageBox.warning(self, "错误", "请先在设置中配置服务商")
-            return
-        
-        if not model:
-            QMessageBox.warning(self, "错误", "请选择一个模型")
-            return
-        
-        self.current_conversation.provider_id = provider_id
-        self.current_conversation.model = model
-
-        # Ensure conversation settings exists and has defaults.
-        if self.current_conversation.settings is None:
-            self.current_conversation.settings = {}
-        self.current_conversation.settings.setdefault('show_thinking', bool(self._app_settings.get('show_thinking', True)))
-
-        # Keep UI (stats panel) in sync with the latest selection.
-        self.stats_panel.update_stats(self.current_conversation)
-
-        # Persist selection immediately so model switches take effect even before response.
-        self.storage.save_conversation(self.current_conversation)
-
-        # 空输入：如果当前会话最后一条是 user 消息，直接基于该会话发送一次
-        if not content and not images:
-            if self.current_conversation.messages and self.current_conversation.messages[-1].role == 'user':
-                self._start_streaming(provider)
-            return
-        
-        user_message = Message(role="user", content=content, images=images)
-        user_message.metadata.update({
-            'provider_id': provider_id,
-            'provider_name': getattr(provider, 'name', ''),
-            'model': model,
-        })
-        self.current_conversation.add_message(user_message)
-        
-        if len(self.current_conversation.messages) == 1:
-            self.current_conversation.generate_title_from_first_message()
-        
-        self.chat_view.add_message(user_message)
-        self.storage.save_conversation(self.current_conversation)
-        
-        conversations = self.storage.list_conversations()
-        self.sidebar.update_conversations(conversations)
-        self.sidebar.select_conversation(self.current_conversation.id)
-        
-        self._start_streaming(provider)
+        self._msg_presenter.send(content, images)
     
     def _start_streaming(self, provider: Provider):
-        conversation = self.current_conversation
-        conversation_id = getattr(conversation, 'id', '') or ''
-        if not conversation_id:
-            return
-
-        debug_log_path = None
-        if bool(self._app_settings.get('log_stream', False)):
-            try:
-                debug_log_path = str(self.storage.data_dir / 'stream_debug.log')
-            except Exception:
-                debug_log_path = None
-
-        enable_thinking = bool((conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True)))
-
-        # Build retry config from global app settings.
-        retry_cfg = None
-        try:
-            from core.config.schema import RetryConfig
-            raw_retry = self._app_settings.get("retry")
-            if raw_retry and isinstance(raw_retry, dict):
-                retry_cfg = RetryConfig.from_dict(raw_retry)
-        except Exception:
-            pass
-
-        # Build a RunPolicy from the UI (InputArea owns mode->policy mapping).
-        try:
-            policy = self.input_area.build_run_policy(enable_thinking=enable_thinking, retry_config=retry_cfg)
-        except Exception:
-            # Fallback: use the same core policy builder (no UI dependencies).
-            try:
-                from core.task.builder import build_run_policy
-                from core.modes.manager import ModeManager
-
-                mm = ModeManager(getattr(conversation, "work_dir", None) or None)
-                policy = build_run_policy(
-                    mode_slug=str(getattr(conversation, "mode", "chat") or "chat"),
-                    enable_thinking=bool(enable_thinking),
-                    enable_search=False,
-                    enable_mcp=False,
-                    mode_manager=mm,
-                )
-            except Exception:
-                from core.task.types import RunPolicy
-
-                policy = RunPolicy(mode="chat", enable_thinking=bool(enable_thinking))
-
-        try:
-            if conversation is not None:
-                conversation.mode = str(getattr(policy, 'mode', '') or '') or (conversation.mode or 'chat')
-        except Exception:
-            pass
-
-        state = self.message_runtime.start(
-            provider,
-            conversation,
-            policy=policy,
-            debug_log_path=debug_log_path,
-        )
-        if not state:
-            return
-
-        # Only disable input / show streaming bubble when user is viewing this conversation.
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            self.chat_view.start_streaming_response(model=state.model)
-            self.chat_view.restore_streaming_state("", "")
-        self._sync_input_enabled()
+        self._msg_presenter.start_streaming(provider)
     
     def _on_token_received(self, conversation_id: str, request_id: str, token: str):
-        """Handle token received during streaming - called from main thread."""
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            # Ensure UI is in streaming mode (e.g. for multi-turn tool use)
-            if not self.chat_view.is_streaming():
-                state = self.message_runtime.get_state(conversation_id)
-                model = state.model if state else ""
-                self.chat_view.start_streaming_response(model)
-
-            self.chat_view.append_streaming_content(token)
+        self._msg_presenter.on_token(conversation_id, request_id, token)
 
     def _on_thinking_received(self, conversation_id: str, request_id: str, thinking: str):
-        """Handle thinking received during streaming - called from main thread."""
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            # Ensure UI is in streaming mode
-            if not self.chat_view.is_streaming():
-                state = self.message_runtime.get_state(conversation_id)
-                model = state.model if state else ""
-                self.chat_view.start_streaming_response(model)
-
-            if bool((self.current_conversation.settings or {}).get('show_thinking', self._app_settings.get('show_thinking', True))):
-                self.chat_view.append_streaming_thinking(thinking)
+        self._msg_presenter.on_thinking(conversation_id, request_id, thinking)
 
     def _open_conversation_settings(self):
         if not self.current_conversation:
@@ -776,7 +506,7 @@ class MainWindow(QMainWindow):
         )
         if dlg.exec():
             dlg.apply_to_conversation()
-            self.storage.save_conversation(self.current_conversation)
+            self.conv_service.save(self.current_conversation)
             self.stats_panel.update_stats(self.current_conversation)
 
             # Sync input area with updated provider/model
@@ -799,13 +529,13 @@ class MainWindow(QMainWindow):
                         self.input_area.mode_combo.blockSignals(False)
                     try:
                         self.input_area.apply_mode_policy(apply_defaults=False)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.debug("Failed to apply mode policy in conv settings: %s", e)
+            except Exception as e:
+                logger.debug("Failed to sync mode selection in conv settings: %s", e)
             self.input_area.set_show_thinking(bool((self.current_conversation.settings or {}).get('show_thinking', True)))
 
-            conversations = self.storage.list_conversations()
+            conversations = self.conv_service.list_all()
             self.sidebar.update_conversations(conversations)
             self.sidebar.select_conversation(self.current_conversation.id)
 
@@ -815,166 +545,32 @@ class MainWindow(QMainWindow):
         if self.current_conversation.settings is None:
             self.current_conversation.settings = {}
         self.current_conversation.settings['show_thinking'] = bool(enabled)
-        self.storage.save_conversation(self.current_conversation)
+        self.conv_service.save(self.current_conversation)
     
     def _on_response_step(self, conversation_id: str, request_id: str, message: Message):
-        """Handle intermediate message steps (tool calls/results)."""
-        target_conv = self.current_conversation if (self.current_conversation and self.current_conversation.id == conversation_id) else self.storage.load_conversation(conversation_id)
-        
-        if not target_conv:
-            return
-
-        # Dedup guard: skip if a message with the same seq_id already exists
-        msg_seq = getattr(message, 'seq_id', None)
-        if msg_seq and any(getattr(m, 'seq_id', None) == msg_seq for m in target_conv.messages):
-            return
-
-        # Use add_message to handle tool result merging automatically
-        target_conv.add_message(message)
-        self.storage.save_conversation(target_conv)
-        
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            if message.role == "assistant":
-                # For assistant step messages (with tool_calls), finish streaming and add to view
-                self.chat_view.finish_streaming_response(message, add_to_view=True)
-                # Re-start streaming for next turn (expecting tool results then more generation)
-                state = self.message_runtime.get_state(conversation_id)
-                if state:
-                    self.chat_view.start_streaming_response(model=state.model)
-            else:
-                # Tool result / nudge message: just add to view
-                self.chat_view.add_message(message)
-
-            # Tool steps may update SessionState (e.g., manage_state -> tasks).
-            # Refresh right panel immediately to keep it in sync.
-            try:
-                self.stats_panel.update_stats(self.current_conversation)
-            except Exception:
-                pass
+        self._msg_presenter.on_response_step(conversation_id, request_id, message)
 
     def _on_response_complete(self, conversation_id: str, request_id: str, response):
-        """Handle response completion - called from main thread."""
-        self._sync_input_enabled()
-
-        # Handle None response (Agent mode completion signal - no message to add)
-        if response is None:
-            # Just clean up streaming UI without adding message
-            if self.current_conversation and self.current_conversation.id == conversation_id:
-                self.chat_view.finish_streaming_response(Message(role="system", content=""), add_to_view=False)
-                self.stats_panel.update_stats(self.current_conversation)
-                
-                provider_name = ""
-                if self.current_conversation.provider_id:
-                    for p in self.providers:
-                        if p.id == self.current_conversation.provider_id:
-                            provider_name = p.name
-                            break
-                self.chat_view.update_header(
-                    provider_name=provider_name,
-                    model=self.current_conversation.model or "",
-                    msg_count=len(self.current_conversation.messages)
-                )
-            self._sync_input_enabled()
-            return
-
-        if not isinstance(response, Message):
-            return
-
-        # Always persist the response to the conversation that initiated the request.
-        target = None
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            target = self.current_conversation
-        else:
-            target = self.storage.load_conversation(conversation_id)
-
-        if not target:
-            return
-
-        # Check if message was already added (e.g., by _on_response_step in Agent mode)
-        message_already_exists = any(m.id == response.id for m in target.messages)
-        
-        if not message_already_exists:
-            target.add_message(response)
-        self.storage.save_conversation(target)
-
-        # Refresh sidebar metadata list
-        try:
-            conversations = self.storage.list_conversations()
-            self.sidebar.update_conversations(conversations)
-        except Exception:
-            pass
-
-        # Only update the visible chat view if the user is still viewing that conversation.
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            # Only add to view if not already present
-            self.chat_view.finish_streaming_response(response, add_to_view=not message_already_exists)
-            self.stats_panel.update_stats(self.current_conversation)
-
-            provider_name = ""
-            if self.current_conversation.provider_id:
-                for p in self.providers:
-                    if p.id == self.current_conversation.provider_id:
-                        provider_name = p.name
-                        break
-            self.chat_view.update_header(
-                provider_name=provider_name,
-                model=self.current_conversation.model or "",
-                msg_count=len(self.current_conversation.messages)
-            )
-
-        self._sync_input_enabled()
+        self._msg_presenter.on_response_complete(conversation_id, request_id, response)
     
     def _on_response_error(self, conversation_id: str, request_id: str, error: str):
-        """Handle response error - called from main thread."""
-        self._sync_input_enabled()
-
-        content = f"错误: {error}"
-        if error == "已取消生成":
-            content = "已取消生成"
-
-        error_message = Message(role="assistant", content=content)
-
-        # Persist the error message to the originating conversation so it doesn't get lost.
-        target = None
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            target = self.current_conversation
-        else:
-            target = self.storage.load_conversation(conversation_id)
-
-        if target:
-            target.add_message(error_message)
-            self.storage.save_conversation(target)
-
-        # Only show the error in the UI if user is still on that conversation.
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            self.chat_view.finish_streaming_response(error_message)
-
-        self._sync_input_enabled()
+        self._msg_presenter.on_response_error(conversation_id, request_id, error)
     
     def _on_retry_attempt(self, conversation_id: str, request_id: str, detail: str):
-        """Handle retry attempt notification from task engine."""
-        if self.current_conversation and self.current_conversation.id == conversation_id:
-            self.statusBar().showMessage(f"重试中: {detail}", 5000)
+        self._msg_presenter.on_retry_attempt(conversation_id, request_id, detail)
 
     def _trigger_compact(self):
-        """Condense current conversation context via ContextCondenser."""
+        """Condense current conversation context via ContextService."""
         if not self.current_conversation:
             return
         conv = self.current_conversation
-        provider = None
-        for p in self.providers:
-            if p.id == conv.provider_id:
-                provider = p
-                break
+        provider = self.conv_service.find_provider(self.providers, conv.provider_id)
         if not provider:
             self.statusBar().showMessage("未找到对应的 Provider，无法压缩上下文", 3000)
             return
-        from core.context.condenser import ContextCondenser
-        condenser = ContextCondenser(self.client)
-        state = conv.get_state() if hasattr(conv, "get_state") else None
         try:
-            condenser.condense_state(conv, provider, state)
-            self.storage.save_conversation(conv)
+            self.context_service.compact(conv, provider)
+            self.conv_service.save(conv)
             self._load_conversation_messages()
             self.statusBar().showMessage("上下文已压缩", 3000)
         except Exception as e:
@@ -986,129 +582,16 @@ class MainWindow(QMainWindow):
         self.message_runtime.cancel(self.current_conversation.id)
 
     def _export_conversation(self, fmt: str = "markdown"):
-        """Export current conversation to a file."""
-        if not self.current_conversation:
-            return
-        from PyQt6.QtWidgets import QFileDialog
-        conv = self.current_conversation
-        default_name = (conv.title or "conversation").replace(" ", "_")
-
-        if fmt == "json":
-            path, _ = QFileDialog.getSaveFileName(self, "Export Conversation", f"{default_name}.json", "JSON (*.json)")
-            if path:
-                import json
-                data = conv.to_dict() if hasattr(conv, "to_dict") else {"messages": [m.to_dict() for m in conv.messages]}
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                self.statusBar().showMessage(f"已导出到 {path}", 3000)
-        else:
-            path, _ = QFileDialog.getSaveFileName(self, "Export Conversation", f"{default_name}.md", "Markdown (*.md)")
-            if path:
-                lines = [f"# {conv.title or 'Conversation'}\n"]
-                for msg in conv.messages:
-                    if msg.role == "system":
-                        continue
-                    role = msg.role.upper()
-                    content = msg.content or ""
-                    lines.append(f"## {role}\n\n{content}\n")
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(lines))
-                self.statusBar().showMessage(f"已导出到 {path}", 3000)
+        self._conv_presenter.export_current(fmt)
 
     def _on_slash_command_result(self, result):
-        """Handle CommandResult from InputArea slash commands."""
-        from core.commands import CommandAction, CommandResult
-
-        # Backwards compat: if somehow a raw string arrives, show it
-        if isinstance(result, str):
-            if self.current_conversation:
-                info_msg = Message(role="assistant", content=result)
-                self.current_conversation.messages.append(info_msg)
-                self.chat_view.add_message(info_msg)
-            return
-
-        if not isinstance(result, CommandResult):
-            return
-
-        if result.action == CommandAction.CLEAR:
-            self._new_conversation()
-        elif result.action == CommandAction.COMPACT:
-            self._trigger_compact()
-        elif result.action == CommandAction.MODE_SWITCH:
-            slug = result.data
-            if slug:
-                idx = self.input_area.mode_combo.findData(slug)
-                if idx >= 0:
-                    self.input_area.mode_combo.setCurrentIndex(idx)
-        elif result.action == CommandAction.SKILL:
-            skill_name = result.data
-            if skill_name and self.current_conversation:
-                settings = self.current_conversation.settings or {}
-                active = list(settings.get("active_skills") or [])
-                if skill_name not in active:
-                    active.append(skill_name)
-                settings["active_skills"] = active
-                self.current_conversation.settings = settings
-                self.storage.save_conversation(self.current_conversation)
-                info_msg = Message(role="assistant", content=f"\u2705 Skill **{skill_name}** activated for this conversation.")
-                self.current_conversation.messages.append(info_msg)
-                self.chat_view.add_message(info_msg)
-        elif result.action == CommandAction.EXPORT:
-            fmt = (result.data or "markdown").strip()
-            self._export_conversation(fmt)
-        elif result.action == CommandAction.DISPLAY and result.display_text:
-            if self.current_conversation:
-                info_msg = Message(role="assistant", content=result.display_text)
-                self.current_conversation.messages.append(info_msg)
-                self.chat_view.add_message(info_msg)
+        self._conv_presenter.handle_command_result(result)
     
     def _edit_message(self, message_id: str):
-        if not self.current_conversation:
-            return
-        
-        message = None
-        for msg in self.current_conversation.messages:
-            if msg.id == message_id:
-                message = msg
-                break
-        
-        if not message:
-            return
-        
-        dialog = MessageEditorDialog(message, self)
-        if dialog.exec():
-            message.content = dialog.get_edited_content()
-            message.images = dialog.get_edited_images()
-            self.chat_view.update_message(message)
-            self.storage.save_conversation(self.current_conversation)
+        self._msg_presenter.edit(message_id)
     
     def _delete_message(self, message_id: str):
-        if not self.current_conversation:
-            return
-        
-        reply = QMessageBox.question(
-            self, '删除消息', '确定要删除这条消息吗？',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            deleted_ids = self.current_conversation.delete_message(message_id) or []
-            for mid in deleted_ids:
-                self.chat_view.remove_message(mid)
-            self.stats_panel.update_stats(self.current_conversation)
-            self.storage.save_conversation(self.current_conversation)
-
-            provider_name = ""
-            if self.current_conversation.provider_id:
-                for p in self.providers:
-                    if p.id == self.current_conversation.provider_id:
-                        provider_name = p.name
-                        break
-            self.chat_view.update_header(
-                provider_name=provider_name,
-                model=self.current_conversation.model or "",
-                msg_count=len(self.current_conversation.messages)
-            )
+        self._msg_presenter.delete(message_id)
     
     def _open_provider_settings(self):
         """Quick access to configure the currently selected provider"""
@@ -1146,7 +629,8 @@ class MainWindow(QMainWindow):
         work_dir = ""
         try:
             work_dir = str(getattr(self.current_conversation, "work_dir", "") or "") if self.current_conversation else ""
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get work_dir for settings: %s", e)
             work_dir = ""
 
         dialog = SettingsDialog(self.providers, current_settings=self._app_settings, parent=self, work_dir=work_dir)
@@ -1167,18 +651,18 @@ class MainWindow(QMainWindow):
                 retry_patch = dialog.get_retry_settings()
                 if retry_patch:
                     self._app_settings["retry"] = retry_patch
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to get retry settings: %s", e)
 
             # New: context defaults + prompt templates
             try:
                 self._app_settings.update(dialog.get_context_settings())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to get context settings: %s", e)
             try:
                 self._app_settings.update(dialog.get_prompt_settings())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to get prompt settings: %s", e)
 
             self._apply_proxy()
             
@@ -1191,8 +675,8 @@ class MainWindow(QMainWindow):
             try:
                 from core.config.app_settings import set_cached_settings
                 set_cached_settings(self._app_settings)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to refresh settings cache: %s", e)
 
             self.stats_panel.setVisible(self._app_settings['show_stats'])
             self.toggle_stats_action.setChecked(self._app_settings['show_stats'])

@@ -6,23 +6,16 @@ from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QTextEdit,
-    QFormLayout,
-    QSpinBox,
-    QDoubleSpinBox,
     QCheckBox,
     QPushButton,
     QComboBox,
-    QGroupBox,
 )
-from PyQt6.QtCore import Qt
 from typing import List, Optional
 
 from models.conversation import Conversation
 from models.provider import Provider
 from core.modes.manager import ModeManager
+from ui.utils.form_builder import FormSection
 
 
 class ConversationSettingsDialog(QDialog):
@@ -46,44 +39,22 @@ class ConversationSettingsDialog(QDialog):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
+        s = conversation.settings or {}
+
         # ===== 基本信息 =====
-        basic_group = QGroupBox("基本信息")
-        form = QFormLayout(basic_group)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(6)
-
-        self.title_edit = QLineEdit()
-        self.title_edit.setObjectName("conv_title")
-        self.title_edit.setText(conversation.title or "")
-        form.addRow("名称", self.title_edit)
-
-        self.system_prompt_edit = QTextEdit()
-        self.system_prompt_edit.setObjectName("conv_system_prompt")
-        self.system_prompt_edit.setPlaceholderText("例如：你是一个严谨的助手...（可选）")
-        self.system_prompt_edit.setAcceptRichText(False)
-        self.system_prompt_edit.setMaximumHeight(80)
-        self.system_prompt_edit.setText((conversation.settings or {}).get("system_prompt", "") or "")
-        form.addRow("系统提示", self.system_prompt_edit)
-
-        root.addWidget(basic_group)
+        basic = FormSection("基本信息")
+        self.title_edit = basic.add_line_edit("名称", text=conversation.title or "", object_name="conv_title")
+        self.system_prompt_edit = basic.add_text_edit(
+            "系统提示", text=s.get("system_prompt", "") or "",
+            placeholder="例如：你是一个严谨的助手...（可选）", object_name="conv_system_prompt",
+        )
+        root.addWidget(basic.group)
 
         # ===== 模型设置 =====
-        model_group = QGroupBox("模型设置")
-        model_form = QFormLayout(model_group)
-        model_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        model_form.setHorizontalSpacing(10)
-        model_form.setVerticalSpacing(6)
-
-        self.provider_combo = QComboBox()
-        self.provider_combo.setObjectName("conv_provider")
+        model_sec = FormSection("模型设置")
+        self.provider_combo = model_sec.add_combo("服务商", object_name="conv_provider")
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        model_form.addRow("服务商", self.provider_combo)
-
-        self.model_combo = QComboBox()
-        self.model_combo.setObjectName("conv_model")
-        self.model_combo.setEditable(True)
-        model_form.addRow("模型", self.model_combo)
+        self.model_combo = model_sec.add_combo("模型", editable=True, object_name="conv_model")
 
         self.mode_combo = QComboBox()
         self.mode_combo.setObjectName("conv_mode")
@@ -92,10 +63,8 @@ class ConversationSettingsDialog(QDialog):
             for m in mm.list_modes():
                 self.mode_combo.addItem(m.name, m.slug)
         except Exception:
-            # Fallback: minimal legacy modes
             self.mode_combo.addItem("Chat", "chat")
             self.mode_combo.addItem("Agent", "agent")
-        # Select current
         try:
             cur_slug = str(getattr(conversation, "mode", "chat") or "chat")
             idx = self.mode_combo.findData(cur_slug)
@@ -103,110 +72,70 @@ class ConversationSettingsDialog(QDialog):
                 self.mode_combo.setCurrentIndex(idx)
         except Exception:
             pass
-        model_form.addRow("模式", self.mode_combo)
+        model_sec.form.addRow("模式", self.mode_combo)
 
-        # Populate providers
         for p in self._providers:
             self.provider_combo.addItem(p.name, p.id)
-        # Select current
         for i, p in enumerate(self._providers):
             if p.id == conversation.provider_id:
                 self.provider_combo.setCurrentIndex(i)
                 break
         if conversation.model:
             self.model_combo.setCurrentText(conversation.model)
-
-        root.addWidget(model_group)
+        root.addWidget(model_sec.group)
 
         # ===== 压缩/优化 =====
-        summary_group = QGroupBox("压缩/优化")
-        summary_form = QFormLayout(summary_group)
-        summary_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        summary_form.setHorizontalSpacing(10)
-        summary_form.setVerticalSpacing(6)
+        comp = FormSection("压缩/优化")
+        self.summary_model_combo = comp.add_combo(
+            "压缩模型", editable=True,
+            current_text=str(s.get("summary_model", "") or ""),
+            object_name="conv_summary_model",
+        )
+        self.summary_include_tool_details = comp.add_checkbox(
+            "包含工具详情（更耗 token）", row_label="工具信息",
+            checked=bool(s.get("summary_include_tool_details", False)),
+            object_name="conv_summary_include_tool_details",
+        )
+        self.summary_system_prompt_edit = comp.add_text_edit(
+            "压缩System", text=s.get("summary_system_prompt", "") or "",
+            placeholder="可选：用于压缩/总结请求的 system prompt（留空使用内置简洁模板）",
+            max_height=70, object_name="conv_summary_system_prompt",
+        )
+        self.prompt_optimizer_model_combo = comp.add_combo(
+            "优化模型", editable=True,
+            current_text=str(s.get("prompt_optimizer_model", "") or ""),
+            object_name="conv_prompt_optimizer_model",
+        )
+        self.prompt_optimizer_system_prompt_edit = comp.add_text_edit(
+            "优化System", text=s.get("prompt_optimizer_system_prompt", "") or "",
+            placeholder="可选：用于'优化提示词'请求的 system prompt（留空使用内置模板）",
+            max_height=70, object_name="conv_prompt_optimizer_system_prompt",
+        )
+        root.addWidget(comp.group)
 
-        self.summary_model_combo = QComboBox()
-        self.summary_model_combo.setObjectName("conv_summary_model")
-        self.summary_model_combo.setEditable(True)
-        summary_model_val = (conversation.settings or {}).get("summary_model", "") or ""
-        if summary_model_val:
-            self.summary_model_combo.setCurrentText(str(summary_model_val))
-        summary_form.addRow("压缩模型", self.summary_model_combo)
-
-        self.summary_include_tool_details = QCheckBox("包含工具详情（更耗 token）")
-        self.summary_include_tool_details.setObjectName("conv_summary_include_tool_details")
-        self.summary_include_tool_details.setChecked(bool((conversation.settings or {}).get("summary_include_tool_details", False)))
-        summary_form.addRow("工具信息", self.summary_include_tool_details)
-
-        self.summary_system_prompt_edit = QTextEdit()
-        self.summary_system_prompt_edit.setObjectName("conv_summary_system_prompt")
-        self.summary_system_prompt_edit.setAcceptRichText(False)
-        self.summary_system_prompt_edit.setMaximumHeight(70)
-        self.summary_system_prompt_edit.setPlaceholderText("可选：用于压缩/总结请求的 system prompt（留空使用内置简洁模板）")
-        self.summary_system_prompt_edit.setText((conversation.settings or {}).get("summary_system_prompt", "") or "")
-        summary_form.addRow("压缩System", self.summary_system_prompt_edit)
-
-        # Prompt optimizer settings (per-conversation override)
-        self.prompt_optimizer_model_combo = QComboBox()
-        self.prompt_optimizer_model_combo.setObjectName("conv_prompt_optimizer_model")
-        self.prompt_optimizer_model_combo.setEditable(True)
-        opt_model_val = (conversation.settings or {}).get("prompt_optimizer_model", "") or ""
-        if opt_model_val:
-            self.prompt_optimizer_model_combo.setCurrentText(str(opt_model_val))
-        summary_form.addRow("优化模型", self.prompt_optimizer_model_combo)
-
-        self.prompt_optimizer_system_prompt_edit = QTextEdit()
-        self.prompt_optimizer_system_prompt_edit.setObjectName("conv_prompt_optimizer_system_prompt")
-        self.prompt_optimizer_system_prompt_edit.setAcceptRichText(False)
-        self.prompt_optimizer_system_prompt_edit.setMaximumHeight(70)
-        self.prompt_optimizer_system_prompt_edit.setPlaceholderText("可选：用于‘优化提示词’请求的 system prompt（留空使用内置模板）")
-        self.prompt_optimizer_system_prompt_edit.setText((conversation.settings or {}).get("prompt_optimizer_system_prompt", "") or "")
-        summary_form.addRow("优化System", self.prompt_optimizer_system_prompt_edit)
-
-        root.addWidget(summary_group)
 
         # ===== 采样参数 =====
-        params_group = QGroupBox("采样参数")
-        params_form = QFormLayout(params_group)
-        params_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        params_form.setHorizontalSpacing(10)
-        params_form.setVerticalSpacing(6)
-
-        self.context_limit = QSpinBox()
-        self.context_limit.setObjectName("conv_context_limit")
-        self.context_limit.setRange(0, 200)
-        self.context_limit.setSingleStep(1)
-        self.context_limit.setValue(int((conversation.settings or {}).get("max_context_messages", 0) or 0))
-        self.context_limit.setToolTip("0 表示不限制")
-        params_form.addRow("上下文消息数", self.context_limit)
-
-        self.temperature = QDoubleSpinBox()
-        self.temperature.setObjectName("conv_temperature")
-        self.temperature.setRange(0.0, 2.0)
-        self.temperature.setSingleStep(0.05)
-        self.temperature.setDecimals(2)
-        temp_val = (conversation.settings or {}).get("temperature")
-        self.temperature.setValue(float(temp_val) if isinstance(temp_val, (int, float)) else 0.70)
-        params_form.addRow("温度", self.temperature)
-
-        self.top_p = QDoubleSpinBox()
-        self.top_p.setObjectName("conv_top_p")
-        self.top_p.setRange(0.0, 1.0)
-        self.top_p.setSingleStep(0.05)
-        self.top_p.setDecimals(2)
-        top_p_val = (conversation.settings or {}).get("top_p")
-        self.top_p.setValue(float(top_p_val) if isinstance(top_p_val, (int, float)) else 1.00)
-        params_form.addRow("Top P", self.top_p)
-
-        self.max_tokens = QSpinBox()
-        self.max_tokens.setObjectName("conv_max_tokens")
-        self.max_tokens.setRange(0, 200000)
-        self.max_tokens.setSingleStep(256)
-        self.max_tokens.setValue(int((conversation.settings or {}).get("max_tokens") or 0)) # 65536
-        self.max_tokens.setToolTip("最大输出 Token 数")
-        params_form.addRow("最大 Token", self.max_tokens)
-
-        root.addWidget(params_group)
+        temp_val = s.get("temperature")
+        top_p_val = s.get("top_p")
+        params = FormSection("采样参数")
+        self.context_limit = params.add_spin(
+            "上下文消息数", value=int(s.get("max_context_messages", 0) or 0),
+            range=(0, 200), tooltip="0 表示不限制", object_name="conv_context_limit",
+        )
+        self.temperature = params.add_double_spin(
+            "温度", value=float(temp_val) if isinstance(temp_val, (int, float)) else 0.70,
+            range=(0.0, 2.0), object_name="conv_temperature",
+        )
+        self.top_p = params.add_double_spin(
+            "Top P", value=float(top_p_val) if isinstance(top_p_val, (int, float)) else 1.00,
+            object_name="conv_top_p",
+        )
+        self.max_tokens = params.add_spin(
+            "最大 Token", value=int(s.get("max_tokens") or 0),
+            range=(0, 200000), step=256, tooltip="最大输出 Token 数",
+            object_name="conv_max_tokens",
+        )
+        root.addWidget(params.group)
 
         # ===== 功能开关 =====
         toggle_row = QHBoxLayout()
@@ -214,12 +143,12 @@ class ConversationSettingsDialog(QDialog):
 
         self.stream_enabled = QCheckBox("流式输出")
         self.stream_enabled.setObjectName("conv_stream")
-        self.stream_enabled.setChecked(bool((conversation.settings or {}).get("stream", True)))
+        self.stream_enabled.setChecked(bool(s.get("stream", True)))
         toggle_row.addWidget(self.stream_enabled)
 
         self.show_thinking = QCheckBox("显示思考")
         self.show_thinking.setObjectName("conv_show_thinking")
-        show_thinking_val = (conversation.settings or {}).get("show_thinking")
+        show_thinking_val = s.get("show_thinking")
         if isinstance(show_thinking_val, bool):
             self.show_thinking.setChecked(show_thinking_val)
         else:

@@ -34,7 +34,7 @@ class TaskPriority(str, Enum):
 @dataclass
 class Task:
     """
-    A structured task/todo item with full metadata.
+    A structured todo item tracked inside the current task/session scope.
     
     Attributes:
         id: Unique identifier (auto-generated short UUID)
@@ -171,9 +171,29 @@ class SessionState:
         """Create a deep copy for rollback support"""
         return copy.deepcopy(self)
 
+    def ensure_document(self, name: str, *, default_content: str = "") -> SessionDocument:
+        """Return an existing session document or create it lazily."""
+        doc = self.documents.get(name)
+        if doc is None:
+            doc = SessionDocument(name=name, content=default_content)
+            self.documents[name] = doc
+        return doc
+
+    def get_plan_document(self) -> SessionDocument:
+        """Return the canonical session plan document."""
+        return self.ensure_document("plan")
+
+    def get_memory_document(self) -> SessionDocument:
+        """Return the canonical long-form memory document."""
+        return self.ensure_document("memory")
+
     def get_active_tasks(self) -> List[Task]:
-        """Get non-completed/cancelled tasks"""
+        """Get non-completed/cancelled todo items."""
         return [t for t in self.tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
+
+    def get_active_todos(self) -> List[Task]:
+        """Alias used by the new concept model: current task todo list."""
+        return self.get_active_tasks()
 
     def find_task(self, task_id: str) -> Optional[Task]:
         """Find task by ID"""
@@ -192,10 +212,10 @@ class SessionState:
         # at the end of the system prompt inside <conversation-summary> tags
         # by system_builder.py to avoid duplication.
         
-        # 1. Active tasks section
-        active_tasks = self.get_active_tasks()
+        # 1. Current todo section
+        active_tasks = self.get_active_todos()
         if active_tasks:
-            task_lines = ["### ✅ Active Tasks"]
+            task_lines = ["### Current Todo List"]
             for t in active_tasks:
                 # Format: - [pending] (high) Task content #tag1 #tag2 [id:abc123]
                 status_icon = "⏳" if t.status == TaskStatus.IN_PROGRESS else "⬜"
@@ -204,18 +224,18 @@ class SessionState:
                 task_lines.append(f"- {status_icon} {priority_str} {t.content} {tags_str} [id:{t.id}]")
             blocks.append("\n".join(task_lines))
         
-        # 2. Memory section (key facts)
+        # 2. Memory section (structured facts)
         if self.memory:
-            mem_lines = ["### 💾 Remembered Facts"]
+            mem_lines = ["### Memory Facts"]
             for key, value in self.memory.items():
                 # Truncate long values
                 display_value = value[:100] + "..." if len(value) > 100 else value
                 mem_lines.append(f"- **{key}**: {display_value}")
             blocks.append("\n".join(mem_lines))
 
-        # 3. Documents section
+        # 3. Session documents (plan/report/memory notes)
         if self.documents:
-            doc_lines = ["### 📄 Session Documents"]
+            doc_lines = ["### Session Documents"]
             for name, doc in self.documents.items():
                 preview = (doc.content[:150] + "...") if len(doc.content) > 150 else doc.content
                 doc_lines.append(f"\n**{name}**:\n{preview}")
@@ -224,5 +244,5 @@ class SessionState:
         if not blocks:
             return ""
         
-        header = "## 🧠 SESSION STATE\n_Use `manage_state` tool to update this when context changes._\n"
+        header = "## SESSION STATE\n_Use `manage_state` and `manage_document` to keep todos, memory, plan and reports current._\n"
         return header + "\n\n".join(blocks)

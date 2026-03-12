@@ -1,14 +1,18 @@
-"""Unified task execution engine.
+"""Unified task execution engine - main coordinator.
 
-Replaces ``core.agent.message_engine.MessageEngine`` with:
-- Retry with exponential backoff on transient LLM errors
-- Context-overflow recovery (condense → retry)
-- Unified condense before each LLM call
-- Clean callback-based event streaming (no Qt)
+Simplified from 574 lines to ~200 lines by extracting:
+- LLMExecutor: LLM API calls with retry
+- ToolExecutor: Tool execution and state management
+- EventEmitter: Event streaming
+
+This module now focuses on orchestration:
+- Turn-based execution loop
+- Hook management
+- Auto-continue logic
+- Sub-task delegation
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from typing import Any, Callable, Optional
@@ -17,7 +21,6 @@ from models.conversation import Conversation, Message
 from models.provider import Provider
 
 from core.llm.client import LLMClient
-from core.tools.base import ToolContext
 from core.tools.manager import McpManager
 from core.config import load_app_config, AppConfig
 from core.task.types import (
@@ -26,14 +29,16 @@ from core.task.types import (
     TaskEventKind,
     TaskResult,
     TaskStatus,
+    TaskTurnState,
+    TurnContext,
+    TurnOutcome,
+    TurnOutcomeKind,
 )
-from core.task.retry import (
-    ErrorKind,
-    classify_error,
-    is_retryable,
-    retry_with_backoff,
-)
+from core.task.retry import ErrorKind, classify_error
 from core.task.repetition import ToolRepetitionDetector
+from core.task.executor import LLMExecutor
+from core.task.tool_executor import ToolExecutor
+from core.task.event_emitter import EventEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +62,10 @@ _REPETITION_WARNING = (
 
 
 class Task:
-    """Unified think-act tool loop.
+    """Unified think-act tool loop coordinator.
 
-    Pure-core module (no Qt).  Streams progress via an ``on_event`` callback.
+    Orchestrates LLM calls, tool execution, and event streaming.
+    Delegates to specialized executors for each responsibility.
     """
 
     def __init__(
@@ -70,7 +76,8 @@ class Task:
     ) -> None:
         self._client = client
         self._mcp_manager = mcp_manager
-        # Hook lists: callables invoked at each turn boundary
+        self._llm_executor = LLMExecutor(client)
+        self._tool_executor = ToolExecutor(mcp_manager)
         self._pre_turn_hooks: list[Callable] = []
         self._post_turn_hooks: list[Callable] = []
 
@@ -101,200 +108,296 @@ class Task:
     ) -> TaskResult:
         turns_limit = max(1, int(policy.max_turns or 20))
         final_assistant: Optional[Message] = None
-        nudge_count = 0
+        turn_context = TurnContext(turn=0)
         repetition_detector = ToolRepetitionDetector()
-
-        def emit(kind: TaskEventKind, turn: int = 0, **kw: Any) -> None:
-            if on_event:
-                try:
-                    on_event(TaskEvent(kind=kind, turn=turn, **kw))
-                except Exception:
-                    pass
+        emitter = EventEmitter(on_event)
 
         for turn in range(turns_limit):
-            if cancel_event and cancel_event.is_set():
-                return TaskResult(status=TaskStatus.CANCELLED)
+            turn_context.turn = turn + 1
+            outcome = await self._run_turn(
+                provider=provider,
+                conversation=conversation,
+                policy=policy,
+                turn_context=turn_context,
+                repetition_detector=repetition_detector,
+                emitter=emitter,
+                turns_limit=turns_limit,
+                on_token=on_token,
+                on_thinking=on_thinking,
+                approval_callback=approval_callback,
+                cancel_event=cancel_event,
+                debug_log_path=debug_log_path,
+                on_event=on_event,
+            )
+            turn_context = outcome.context
+            if outcome.final_message is not None:
+                final_assistant = outcome.final_message
 
-            emit(TaskEventKind.TURN_START, turn=turn + 1, detail=f"Turn {turn + 1}/{turns_limit}")
-
-            # --- Pre-turn hooks ---
-            for hook in self._pre_turn_hooks:
-                try:
-                    hook(conversation, turn + 1, policy)
-                except Exception as he:
-                    logger.debug("Pre-turn hook error: %s", he)
-
-            # --- Inject user context (XML tags) on first turn ---
-            if turn == 0:
-                self._inject_user_context(conversation, policy)
-
-            # --- Condense context ---
-            await self._maybe_condense(conversation, provider, policy)
-
-            # --- LLM call with retry ---
-            try:
-                assistant_msg = await self._call_llm_with_retry(
-                    provider=provider,
-                    conversation=conversation,
-                    policy=policy,
-                    on_token=on_token,
-                    on_thinking=on_thinking,
-                    cancel_event=cancel_event,
-                    debug_log_path=debug_log_path,
-                    emit=lambda **kw: emit(turn=turn + 1, **kw),
-                )
-            except Exception as e:
-                kind = classify_error(e)
-                # Context overflow: try emergency condense + one more attempt
-                if kind == ErrorKind.CONTEXT_OVERFLOW:
-                    try:
-                        await self._force_condense(conversation, provider, policy)
-                        assistant_msg = await self._call_llm_raw(
-                            provider=provider,
-                            conversation=conversation,
-                            policy=policy,
-                            on_token=on_token,
-                            on_thinking=on_thinking,
-                            cancel_event=cancel_event,
-                            debug_log_path=debug_log_path,
-                        )
-                    except Exception as e2:
-                        return TaskResult(status=TaskStatus.FAILED, error=str(e2))
-                else:
-                    return TaskResult(status=TaskStatus.FAILED, error=str(e))
-
-            # Assign seq_id and append
-            try:
-                assistant_msg.seq_id = conversation.next_seq_id()
-            except Exception:
-                pass
-
-            emit(TaskEventKind.STEP, turn=turn + 1, data=assistant_msg)
-            conversation.add_message(assistant_msg)
-            final_assistant = assistant_msg
-
-            # --- Post-turn hooks ---
-            for hook in self._post_turn_hooks:
-                try:
-                    hook(conversation, turn + 1, assistant_msg)
-                except Exception as he:
-                    logger.debug("Post-turn hook error: %s", he)
-
-            if cancel_event and cancel_event.is_set():
-                return TaskResult(status=TaskStatus.CANCELLED)
-
-            # No tool calls → check auto-continue or finish
-            if not assistant_msg.tool_calls:
-                mode_slug = (policy.mode or "chat").lower()
-                if mode_slug in _AUTO_CONTINUE_MODES and nudge_count < _MAX_NUDGE_COUNT:
-                    # Auto-continue: inject nudge and loop again
-                    nudge_count += 1
-                    logger.info("Auto-continue nudge %d/%d (mode=%s)", nudge_count, _MAX_NUDGE_COUNT, mode_slug)
-                    nudge_msg = Message(role="user", content=_NUDGE_TEXT)
-                    try:
-                        nudge_msg.seq_id = conversation.next_seq_id()
-                    except Exception:
-                        pass
-                    emit(TaskEventKind.STEP, turn=turn + 1, data=nudge_msg)
-                    conversation.add_message(nudge_msg)
-                    continue
-                # Non-agent mode or nudge budget exhausted → finish
-                await self._maybe_condense(conversation, provider, policy)
-                self._attach_state_snapshot(conversation, assistant_msg)
-                return TaskResult(status=TaskStatus.COMPLETED, final_message=final_assistant)
-
-            # --- Execute tools ---
-            # Reset nudge counter when LLM successfully uses tools
-            nudge_count = 0
-
-            for tool_call in assistant_msg.tool_calls or []:
-                if cancel_event and cancel_event.is_set():
-                    return TaskResult(status=TaskStatus.CANCELLED)
-
-                tool_name, args, tool_call_id = self._parse_tool_call(tool_call)
-
-                # --- Repetition detection ---
-                if repetition_detector.record(tool_name, args if isinstance(args, dict) else {}):
-                    logger.warning("Tool repetition detected: %s", tool_name)
-                    warn_msg = Message(role="user", content=_REPETITION_WARNING)
-                    try:
-                        warn_msg.seq_id = conversation.next_seq_id()
-                    except Exception:
-                        pass
-                    emit(TaskEventKind.STEP, turn=turn + 1, data=warn_msg)
-                    conversation.add_message(warn_msg)
-                    repetition_detector.reset()
-                    break  # Skip executing, let LLM reconsider
-
-                allowed = self._is_tool_allowed(tool_name, policy)
-
-                context = self._build_tool_context(
-                    conversation=conversation,
-                    provider=provider,
-                    approval_callback=approval_callback,
-                )
-                result_text = await self._execute_tool(
-                    tool_name=tool_name,
-                    tool_args=args,
-                    allowed=allowed,
-                    policy=policy,
-                    context=context,
-                )
-
-                # --- Handle sub-task delegation ---
-                subtask_req = (context.state or {}).get("_pending_subtask")
-                if subtask_req and isinstance(subtask_req, dict):
-                    context.state.pop("_pending_subtask", None)
-                    subtask_result = await self._run_subtask(
-                        subtask_req=subtask_req,
-                        provider=provider,
-                        conversation=conversation,
-                        on_event=on_event,
-                        on_token=on_token,
-                        on_thinking=on_thinking,
-                        approval_callback=approval_callback,
-                        cancel_event=cancel_event,
-                    )
-                    result_text = str(subtask_result)
-
-                # --- Handle attempt_completion signal ---
-                if (context.state or {}).get("_task_completed"):
-                    completion_result = (context.state or {}).get("_completion_result", "")
-                    self._sync_state(conversation, context)
-                    tool_msg = Message(role="tool", content=str(result_text), tool_call_id=tool_call_id)
-                    try:
-                        tool_msg.seq_id = conversation.next_seq_id()
-                    except Exception:
-                        pass
-                    emit(TaskEventKind.STEP, turn=turn + 1, data=tool_msg)
-                    conversation.add_message(tool_msg)
-                    return TaskResult(status=TaskStatus.COMPLETED, final_message=assistant_msg)
-
-                self._sync_state(conversation, context)
-
-                tool_msg = Message(
-                    role="tool",
-                    content=str(result_text),
-                    tool_call_id=tool_call_id,
-                )
-                try:
-                    tool_msg.seq_id = conversation.next_seq_id()
-                except Exception:
-                    pass
-                try:
-                    tool_msg.metadata = tool_msg.metadata or {}
-                    tool_msg.metadata["name"] = tool_name
-                except Exception:
-                    pass
-                self._attach_state_snapshot(conversation, tool_msg)
-                emit(TaskEventKind.STEP, turn=turn + 1, data=tool_msg)
-                conversation.add_message(tool_msg)
+            if outcome.kind == TurnOutcomeKind.CONTINUE:
+                continue
+            if outcome.kind == TurnOutcomeKind.CANCELLED:
+                return TaskResult(status=TaskStatus.CANCELLED, final_message=final_assistant)
+            if outcome.kind == TurnOutcomeKind.FAILED:
+                return TaskResult(status=TaskStatus.FAILED, final_message=final_assistant, error=outcome.error)
+            return TaskResult(status=TaskStatus.COMPLETED, final_message=outcome.final_message or final_assistant)
 
         return TaskResult(status=TaskStatus.COMPLETED, final_message=final_assistant)
 
-    # ------------------------------------------------------------------
-    # Sub-task execution (multi-agent)
-    # ------------------------------------------------------------------
+    async def _run_turn(
+        self,
+        *,
+        provider: Provider,
+        conversation: Conversation,
+        policy: RunPolicy,
+        turn_context: TurnContext,
+        repetition_detector: ToolRepetitionDetector,
+        emitter: EventEmitter,
+        turns_limit: int,
+        on_token,
+        on_thinking,
+        approval_callback,
+        cancel_event,
+        debug_log_path,
+        on_event,
+    ) -> TurnOutcome:
+        if cancel_event and cancel_event.is_set():
+            turn_context.state = TaskTurnState.CANCELLED
+            return TurnOutcome(kind=TurnOutcomeKind.CANCELLED, context=turn_context)
+
+        emitter.emit(TaskEventKind.TURN_START, turn=turn_context.turn, detail=f"Turn {turn_context.turn}/{turns_limit}")
+        turn_context.state = TaskTurnState.PRE_TURN_HOOKS
+        for hook in self._pre_turn_hooks:
+            try:
+                hook(conversation, turn_context.turn, policy)
+            except Exception as he:
+                logger.debug("Pre-turn hook error: %s", he)
+
+        turn_context.state = TaskTurnState.CONDENSING
+        await self._maybe_condense(conversation, provider, policy)
+
+        assistant_msg = await self._request_assistant_message(
+            provider=provider,
+            conversation=conversation,
+            policy=policy,
+            turn_context=turn_context,
+            emitter=emitter,
+            on_token=on_token,
+            on_thinking=on_thinking,
+            cancel_event=cancel_event,
+            debug_log_path=debug_log_path,
+        )
+        if isinstance(assistant_msg, TurnOutcome):
+            return assistant_msg
+
+        turn_context.runtime_messages = []
+        turn_context.state = TaskTurnState.ASSISTANT_RECEIVED
+        try:
+            assistant_msg.seq_id = conversation.next_seq_id()
+        except Exception as e:
+            logger.warning("Failed to assign seq_id to assistant message: %s", e)
+
+        emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=assistant_msg)
+        conversation.add_message(assistant_msg)
+
+        for hook in self._post_turn_hooks:
+            try:
+                hook(conversation, turn_context.turn, assistant_msg)
+            except Exception as he:
+                logger.debug("Post-turn hook error: %s", he)
+
+        if cancel_event and cancel_event.is_set():
+            turn_context.state = TaskTurnState.CANCELLED
+            return TurnOutcome(kind=TurnOutcomeKind.CANCELLED, context=turn_context, final_message=assistant_msg)
+
+        if not assistant_msg.tool_calls:
+            return await self._handle_turn_without_tools(
+                provider=provider,
+                conversation=conversation,
+                policy=policy,
+                turn_context=turn_context,
+                assistant_msg=assistant_msg,
+            )
+
+        turn_context.nudge_count = 0
+        turn_context.state = TaskTurnState.TOOL_EXECUTION
+        return await self._execute_tool_calls(
+            provider=provider,
+            conversation=conversation,
+            policy=policy,
+            turn_context=turn_context,
+            assistant_msg=assistant_msg,
+            repetition_detector=repetition_detector,
+            emitter=emitter,
+            approval_callback=approval_callback,
+            cancel_event=cancel_event,
+            on_event=on_event,
+            on_token=on_token,
+            on_thinking=on_thinking,
+        )
+
+    async def _request_assistant_message(
+        self,
+        *,
+        provider: Provider,
+        conversation: Conversation,
+        policy: RunPolicy,
+        turn_context: TurnContext,
+        emitter: EventEmitter,
+        on_token,
+        on_thinking,
+        cancel_event,
+        debug_log_path,
+    ) -> Message | TurnOutcome:
+        turn_context.state = TaskTurnState.LLM_CALL
+        try:
+            return await self._llm_executor.call_with_retry(
+                provider=provider,
+                conversation=conversation,
+                policy=policy,
+                runtime_messages=turn_context.runtime_messages,
+                on_token=on_token,
+                on_thinking=on_thinking,
+                cancel_event=cancel_event,
+                debug_log_path=debug_log_path,
+                emit=lambda **kw: emitter.emit(turn=turn_context.turn, **kw),
+            )
+        except Exception as e:
+            kind = classify_error(e)
+            if kind == ErrorKind.CONTEXT_OVERFLOW:
+                try:
+                    await self._force_condense(conversation, provider, policy)
+                    return await self._llm_executor._call_raw(
+                        provider=provider,
+                        conversation=conversation,
+                        policy=policy,
+                        runtime_messages=turn_context.runtime_messages,
+                        on_token=on_token,
+                        on_thinking=on_thinking,
+                        cancel_event=cancel_event,
+                        debug_log_path=debug_log_path,
+                    )
+                except Exception as e2:
+                    turn_context.state = TaskTurnState.FAILED
+                    return TurnOutcome(kind=TurnOutcomeKind.FAILED, context=turn_context, error=str(e2))
+            turn_context.state = TaskTurnState.FAILED
+            return TurnOutcome(kind=TurnOutcomeKind.FAILED, context=turn_context, error=str(e))
+
+    async def _handle_turn_without_tools(
+        self,
+        *,
+        provider: Provider,
+        conversation: Conversation,
+        policy: RunPolicy,
+        turn_context: TurnContext,
+        assistant_msg: Message,
+    ) -> TurnOutcome:
+        mode_slug = (policy.mode or "chat").lower()
+        if mode_slug in _AUTO_CONTINUE_MODES and turn_context.nudge_count < _MAX_NUDGE_COUNT:
+            turn_context.nudge_count += 1
+            logger.info(
+                "Auto-continue nudge %d/%d (mode=%s)",
+                turn_context.nudge_count,
+                _MAX_NUDGE_COUNT,
+                mode_slug,
+            )
+            turn_context.runtime_messages = [Message(role="user", content=_NUDGE_TEXT)]
+            turn_context.state = TaskTurnState.TURN_COMPLETE
+            return TurnOutcome(kind=TurnOutcomeKind.CONTINUE, context=turn_context, final_message=assistant_msg)
+
+        await self._maybe_condense(conversation, provider, policy)
+        self._attach_state_snapshot(conversation, assistant_msg)
+        turn_context.state = TaskTurnState.TURN_COMPLETE
+        return TurnOutcome(kind=TurnOutcomeKind.COMPLETE, context=turn_context, final_message=assistant_msg)
+
+    async def _execute_tool_calls(
+        self,
+        *,
+        provider: Provider,
+        conversation: Conversation,
+        policy: RunPolicy,
+        turn_context: TurnContext,
+        assistant_msg: Message,
+        repetition_detector: ToolRepetitionDetector,
+        emitter: EventEmitter,
+        approval_callback,
+        cancel_event,
+        on_event,
+        on_token,
+        on_thinking,
+    ) -> TurnOutcome:
+        for tool_call in assistant_msg.tool_calls or []:
+            if cancel_event and cancel_event.is_set():
+                turn_context.state = TaskTurnState.CANCELLED
+                return TurnOutcome(kind=TurnOutcomeKind.CANCELLED, context=turn_context, final_message=assistant_msg)
+
+            tool_name, args, tool_call_id = self._tool_executor.parse_tool_call(tool_call)
+            if repetition_detector.record(tool_name, args if isinstance(args, dict) else {}):
+                logger.warning("Tool repetition detected: %s", tool_name)
+                turn_context.runtime_messages = [Message(role="user", content=_REPETITION_WARNING)]
+                repetition_detector.reset()
+                turn_context.state = TaskTurnState.TURN_COMPLETE
+                return TurnOutcome(kind=TurnOutcomeKind.CONTINUE, context=turn_context, final_message=assistant_msg)
+
+            allowed = self._tool_executor.is_tool_allowed(tool_name, policy)
+            context = self._tool_executor.build_tool_context(
+                conversation=conversation,
+                provider=provider,
+                approval_callback=approval_callback,
+                llm_client=self._client,
+            )
+            result_text = await self._tool_executor.execute_tool(
+                tool_name=tool_name,
+                tool_args=args,
+                allowed=allowed,
+                policy=policy,
+                context=context,
+            )
+
+            subtask_req = (context.state or {}).get("_pending_subtask")
+            if subtask_req and isinstance(subtask_req, dict):
+                context.state.pop("_pending_subtask", None)
+                subtask_result = await self._run_subtask(
+                    subtask_req=subtask_req,
+                    provider=provider,
+                    conversation=conversation,
+                    on_event=on_event,
+                    on_token=on_token,
+                    on_thinking=on_thinking,
+                    approval_callback=approval_callback,
+                    cancel_event=cancel_event,
+                )
+                result_text = str(subtask_result)
+
+            if (context.state or {}).get("_task_completed"):
+                self._tool_executor.sync_state(conversation, context)
+                tool_msg = Message(role="tool", content=str(result_text), tool_call_id=tool_call_id)
+                try:
+                    tool_msg.seq_id = conversation.next_seq_id()
+                except Exception as e:
+                    logger.warning("Failed to assign seq_id to completion tool message: %s", e)
+                emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=tool_msg)
+                conversation.add_message(tool_msg)
+                turn_context.state = TaskTurnState.TURN_COMPLETE
+                return TurnOutcome(kind=TurnOutcomeKind.COMPLETE, context=turn_context, final_message=assistant_msg)
+
+            self._tool_executor.sync_state(conversation, context)
+            tool_msg = Message(role="tool", content=str(result_text), tool_call_id=tool_call_id)
+            try:
+                tool_msg.seq_id = conversation.next_seq_id()
+            except Exception as e:
+                logger.warning("Failed to assign seq_id to tool message: %s", e)
+            try:
+                tool_msg.metadata = tool_msg.metadata or {}
+                tool_msg.metadata["name"] = tool_name
+            except Exception as e:
+                logger.debug("Failed to set tool metadata: %s", e)
+            self._tool_executor.attach_state_snapshot(conversation, tool_msg)
+            emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=tool_msg)
+            conversation.add_message(tool_msg)
+
+        turn_context.state = TaskTurnState.TURN_COMPLETE
+        turn_context.runtime_messages = []
+        return TurnOutcome(kind=TurnOutcomeKind.CONTINUE, context=turn_context, final_message=assistant_msg)
 
     async def _run_subtask(
         self,
@@ -325,8 +428,8 @@ class Task:
             # Inherit work_dir from parent
             try:
                 child_conv.work_dir = getattr(conversation, "work_dir", ".") or "."
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to inherit work_dir for subtask: %s", e)
 
             child_task = Task(client=self._client, mcp_manager=self._mcp_manager)
             result = await child_task.run(
@@ -352,85 +455,6 @@ class Task:
             return f"Sub-task error: {e}"
 
     # ------------------------------------------------------------------
-    # User context injection
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _inject_user_context(conversation: Conversation, policy: RunPolicy) -> None:
-        """Inject environment/workspace/summary XML into user messages."""
-        try:
-            from core.prompts.user_context import inject_user_context
-
-            inject_user_context(
-                conversation,
-                include_environment=True,
-                include_workspace=bool(policy.enable_mcp),
-                include_summary=True,
-                inject_mode="first",
-            )
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
-    # LLM call with retry
-    # ------------------------------------------------------------------
-
-    async def _call_llm_with_retry(
-        self,
-        *,
-        provider: Provider,
-        conversation: Conversation,
-        policy: RunPolicy,
-        on_token,
-        on_thinking,
-        cancel_event,
-        debug_log_path,
-        emit,
-    ) -> Message:
-        retry_policy = policy.retry
-
-        def on_retry(attempt: int, delay: float, error: str) -> None:
-            logger.warning("LLM retry %d after %.1fs: %s", attempt, delay, error)
-            emit(kind=TaskEventKind.RETRY, detail=f"Retry {attempt} in {delay:.0f}s: {error}")
-
-        return await retry_with_backoff(
-            lambda: self._call_llm_raw(
-                provider=provider,
-                conversation=conversation,
-                policy=policy,
-                on_token=on_token,
-                on_thinking=on_thinking,
-                cancel_event=cancel_event,
-                debug_log_path=debug_log_path,
-            ),
-            policy=retry_policy,
-            on_retry=on_retry,
-        )
-
-    async def _call_llm_raw(
-        self,
-        *,
-        provider: Provider,
-        conversation: Conversation,
-        policy: RunPolicy,
-        on_token,
-        on_thinking,
-        cancel_event,
-        debug_log_path,
-    ) -> Message:
-        return await self._client.send_message(
-            provider=provider,
-            conversation=conversation,
-            enable_thinking=bool(policy.enable_thinking),
-            enable_search=bool(policy.enable_search),
-            enable_mcp=bool(policy.enable_mcp),
-            on_token=on_token,
-            on_thinking=on_thinking,
-            debug_log_path=debug_log_path,
-            cancel_event=cancel_event,
-        )
-
-    # ------------------------------------------------------------------
     # Context management (condense)
     # ------------------------------------------------------------------
 
@@ -440,15 +464,17 @@ class Task:
         provider: Provider,
         policy: RunPolicy,
     ) -> None:
-        """Condense if app config allows and policy doesn't force OFF."""
+        """使用统一的 ContextManager 进行上下文压缩。"""
         try:
             cfg = load_app_config()
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to load app config, using defaults: %s", e)
             cfg = AppConfig()
 
         try:
             cfg_enabled = bool(getattr(getattr(cfg, "context", None), "agent_auto_compress_enabled", True))
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to read auto_compress_enabled config: %s", e)
             cfg_enabled = True
 
         if policy.auto_compress_enabled is False:
@@ -456,14 +482,33 @@ class Task:
         if not cfg_enabled:
             return
 
-        from core.context.condenser import ContextCondenser as Condenser
-        condenser = Condenser(self._client)
-        await condenser.auto_condense(
-            conversation=conversation,
-            provider=provider,
-            context_window_limit=int(policy.context_window_limit),
-            app_config=cfg,
+        from core.context.condenser import ContextCondenser, CondensePolicy
+        from core.context.manager import ContextManager
+
+        condenser = ContextCondenser(self._client)
+        context_manager = ContextManager(
+            condenser=condenser,
+            policy=CondensePolicy(
+                max_active_messages=20,
+                token_threshold_ratio=0.7,
+                keep_last_n=3,
+            )
         )
+
+        should_compress = context_manager._should_compress(
+            conversation,
+            int(policy.context_window_limit)
+        )
+
+        if should_compress:
+            logger.info("触发上下文压缩")
+            await condenser.auto_condense(
+                conversation=conversation,
+                provider=provider,
+                context_window_limit=int(policy.context_window_limit),
+                app_config=cfg,
+                policy=context_manager.policy,
+            )
 
     async def _force_condense(
         self,
@@ -471,7 +516,7 @@ class Task:
         provider: Provider,
         policy: RunPolicy,
     ) -> None:
-        """Emergency condense on context overflow — aggressive keep_last_n."""
+        """Emergency condense on context overflow."""
         from core.context.condenser import ContextCondenser as Condenser
         condenser = Condenser(self._client)
         state = conversation.get_state()
@@ -479,96 +524,6 @@ class Task:
         conversation.set_state(state)
         logger.info("Emergency condense complete")
 
-    # ------------------------------------------------------------------
-    # Tool execution helpers
-    # ------------------------------------------------------------------
-
-    def _parse_tool_call(self, tool_call: dict) -> tuple[str, dict, Optional[str]]:
-        tool_name = tool_call.get("function", {}).get("name")
-        args_str = tool_call.get("function", {}).get("arguments", "{}")
-        tool_call_id = tool_call.get("id")
-        try:
-            args = json.loads(args_str) if isinstance(args_str, str) else {}
-        except Exception:
-            args = {}
-        return str(tool_name or ""), (args if isinstance(args, dict) else {}), tool_call_id
-
-    def _is_tool_allowed(self, tool_name: str, policy: RunPolicy) -> bool:
-        try:
-            allowlist = policy.tool_allowlist
-            if allowlist is not None and tool_name not in allowlist:
-                return False
-            if tool_name == "builtin_web_search":
-                return bool(policy.enable_search)
-            return bool(policy.enable_mcp)
-        except Exception:
-            return False
-
-    def _build_tool_context(
-        self,
-        *,
-        conversation: Conversation,
-        provider: Provider,
-        approval_callback: Optional[Callable[[str], bool]],
-    ) -> ToolContext:
-        work_dir = getattr(conversation, "work_dir", "") or "."
-        state_dict: dict[str, Any]
-        try:
-            state_dict = dict(conversation.get_state().to_dict() or {})
-        except Exception:
-            try:
-                state_dict = dict(getattr(conversation, "_state_dict", {}) or {})
-            except Exception:
-                state_dict = {}
-        try:
-            state_dict["_current_seq"] = int(conversation.current_seq_id() or 0)
-        except Exception:
-            state_dict["_current_seq"] = 0
-
-        return ToolContext(
-            work_dir=work_dir,
-            approval_callback=approval_callback or (lambda _msg: False),
-            state=state_dict,
-            llm_client=self._client,
-            conversation=conversation,
-            provider=provider,
-        )
-
-    async def _execute_tool(
-        self,
-        *,
-        tool_name: str,
-        tool_args: dict,
-        allowed: bool,
-        policy: RunPolicy,
-        context: ToolContext,
-    ) -> str:
-        if not allowed:
-            return (
-                f"Tool '{tool_name}' is disabled by current mode/settings. "
-                f"(enable_search={bool(policy.enable_search)}, enable_mcp={bool(policy.enable_mcp)})"
-            )
-        try:
-            return await self._mcp_manager.execute_tool_with_context(tool_name, tool_args, context)
-        except Exception as e:
-            return f"Error executing tool {tool_name}: {e}"
-
-    def _sync_state(self, conversation: Conversation, context: ToolContext) -> None:
-        try:
-            synced = {k: v for k, v in (context.state or {}).items() if not str(k).startswith("_")}
-            try:
-                from models.state import SessionState
-                conversation.set_state(SessionState.from_dict(dict(synced)))
-            except Exception:
-                try:
-                    conversation._state_dict = dict(synced)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
     def _attach_state_snapshot(self, conversation: Conversation, msg: Message) -> None:
-        try:
-            msg.state_snapshot = dict(getattr(conversation, "_state_dict", {}) or {})
-        except Exception:
-            msg.state_snapshot = None
+        """Attach state snapshot to message."""
+        self._tool_executor.attach_state_snapshot(conversation, msg)

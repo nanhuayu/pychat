@@ -39,25 +39,15 @@ from core.tools.system.multi_agent import NewTaskTool, AttemptCompletionTool, Sw
 from core.tools.system.document_tools import ManageDocumentTool
 
 class McpManager:
-    _instance = None
-    
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(McpManager, cls).__new__(cls)
-            cls._instance.initialized = False
-        return cls._instance
+    """MCP service manager.
+
+    Lifecycle is managed by ``AppContainer`` — do not instantiate directly
+    outside of the container or ``LLMClient`` fallback path.
+    """
 
     def __init__(self):
-        if self.initialized:
-            return
-            
         self.storage = StorageService()
         self.servers: List[McpServerConfig] = []
-        # We don't maintain persistent sessions for stateless tool listing in this design,
-        # but for execution we might need to if we want state.
-        # For now, we follow the previous pattern of connect-on-demand for listing.
-        
-        self.initialized = True
         
         # Initialize Registry
         self.registry = ToolRegistry()

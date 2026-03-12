@@ -16,7 +16,7 @@ class SummaryService:
         conversation: Any, 
         provider: Any,
         current_seq: int,
-        keep_last_n: int = 5
+        keep_last_n: int = 3
     ) -> List[str]:
         feedback = []
         

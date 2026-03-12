@@ -1,29 +1,7 @@
-import json
 import re
-import subprocess
-import os
 from typing import Any, Dict
 from core.tools.base import BaseTool, ToolContext, ToolResult
-
-
-def _decode_subprocess_output(data: object) -> str:
-    if not data:
-        return ""
-    if isinstance(data, str):
-        return data
-    if not isinstance(data, (bytes, bytearray)):
-        try:
-            return str(data)
-        except Exception:
-            return ""
-
-    raw = bytes(data)
-    for enc in ("utf-8", "utf-8-sig", "gbk", "mbcs"):
-        try:
-            return raw.decode(enc)
-        except Exception:
-            pass
-    return raw.decode("utf-8", errors="replace")
+from core.tools.process import CommandExecutionRequest, CommandExecutor, is_dangerous_command
 
 
 # Commands that could cause irreversible damage — require explicit approval
@@ -44,28 +22,11 @@ _DANGEROUS_PATTERNS = [
     r"\breboot\b",
 ]
 
-_MAX_OUTPUT_LINES = 2000
-_MAX_OUTPUT_BYTES = 50 * 1024  # 50 KB
-
-
-def _is_dangerous(command: str) -> bool:
-    cmd_lower = command.lower()
-    return any(re.search(p, cmd_lower) for p in _DANGEROUS_PATTERNS)
-
-
-def _truncate_output(text: str) -> str:
-    if len(text) > _MAX_OUTPUT_BYTES:
-        text = text[:_MAX_OUTPUT_BYTES] + f"\n\n... [truncated at {_MAX_OUTPUT_BYTES} bytes]"
-    lines = text.splitlines()
-    if len(lines) > _MAX_OUTPUT_LINES:
-        text = "\n".join(lines[:_MAX_OUTPUT_LINES]) + f"\n\n... [{len(lines) - _MAX_OUTPUT_LINES} lines truncated]"
-    return text
-
-
 class ExecuteCommandTool(BaseTool):
     def __init__(self):
         super().__init__()
         self._approved_commands = set()
+        self._executor = CommandExecutor()
 
     @property
     def name(self) -> str:
@@ -122,7 +83,7 @@ class ExecuteCommandTool(BaseTool):
             return ToolResult(str(e), is_error=True)
 
         # Dangerous command gate — always require fresh approval
-        dangerous = _is_dangerous(command)
+        dangerous = is_dangerous_command(command)
         cmd_key = f"{command}@{cwd_path}"
 
         if dangerous:
@@ -136,49 +97,20 @@ class ExecuteCommandTool(BaseTool):
             self._approved_commands.add(cmd_key)
 
         # Background execution
-        if background:
-            try:
-                proc = subprocess.Popen(
-                    command,
-                    shell=True,
-                    cwd=str(cwd_path),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                return ToolResult(f"Command started in background (PID {proc.pid})")
-            except Exception as e:
-                return ToolResult(f"Failed to start background process: {e}", is_error=True)
-
-        # Foreground execution with timeout
         try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=str(cwd_path),
-                capture_output=True,
-                text=False,
-                timeout=timeout_sec,
+            result = self._executor.execute(
+                CommandExecutionRequest(
+                    command=command,
+                    cwd=cwd_path,
+                    timeout_sec=timeout_sec,
+                    background=background,
+                )
             )
-
-            stdout = _truncate_output(_decode_subprocess_output(proc.stdout).strip())
-            stderr = _truncate_output(_decode_subprocess_output(proc.stderr).strip())
-            exit_code = proc.returncode
-
-            output_parts = []
-            output_parts.append(f"Command executed in '{cwd_path}'. Exit code: {exit_code}")
-
-            if stdout:
-                output_parts.append(f"Stdout:\n{stdout}")
-            if stderr:
-                output_parts.append(f"Stderr:\n{stderr}")
-
-            return ToolResult("\n\n".join(output_parts))
-
-        except subprocess.TimeoutExpired:
-            return ToolResult(
-                f"Command timed out after {timeout_sec}s. "
-                f"Use 'background: true' for long-running commands.",
-                is_error=True,
-            )
+            if result.timed_out:
+                return ToolResult(
+                    f"Command timed out after {timeout_sec}s. Use 'background: true' for long-running commands.",
+                    is_error=True,
+                )
+            return ToolResult(result.to_display_text(cwd_path))
         except Exception as e:
             return ToolResult(f"Execution error: {e}", is_error=True)

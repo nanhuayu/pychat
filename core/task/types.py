@@ -50,6 +50,41 @@ class TaskEvent:
     detail: str = ""
 
 
+class TaskTurnState(str, Enum):
+    TURN_START = "turn_start"
+    PRE_TURN_HOOKS = "pre_turn_hooks"
+    CONDENSING = "condensing"
+    LLM_CALL = "llm_call"
+    ASSISTANT_RECEIVED = "assistant_received"
+    TOOL_EXECUTION = "tool_execution"
+    TURN_COMPLETE = "turn_complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TurnOutcomeKind(str, Enum):
+    CONTINUE = "continue"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class TurnContext:
+    turn: int
+    nudge_count: int = 0
+    runtime_messages: list[Message] = field(default_factory=list)
+    state: TaskTurnState = TaskTurnState.TURN_START
+
+
+@dataclass
+class TurnOutcome:
+    kind: TurnOutcomeKind
+    context: TurnContext
+    final_message: Optional[Message] = None
+    error: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # RetryPolicy
 # ---------------------------------------------------------------------------
@@ -80,6 +115,11 @@ class RunPolicy:
     enable_thinking: bool = True
     enable_search: bool = False
     enable_mcp: bool = False
+
+    # Model / generation overrides (None → use provider defaults).
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
     # If set, only these tools are callable.
     tool_allowlist: Optional[Set[str]] = None

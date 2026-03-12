@@ -2,6 +2,8 @@
 Input area widget - Compact responsive layout
 """
 
+import logging
+import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QTextEdit, QLabel, QFileDialog, QComboBox,
@@ -24,452 +26,19 @@ from core.commands.mentions import MentionCandidate, MentionKind, MentionQuery
 from ui.utils.image_utils import extract_images_from_mime, is_supported_image_path
 from ui.utils.image_loader import load_pixmap
 
-
-class AttachmentPreviewItem(QFrame):
-    """Preview item for attached images or files."""
-
-    remove_requested = pyqtSignal(str)
-
-    def __init__(self, source: str, is_image: bool = True, parent=None):
-        super().__init__(parent)
-        self.source = source
-        self.is_image = is_image
-        self._setup_ui()
-
-    def _setup_ui(self) -> None:
-        self.setObjectName("image_preview_item")
-        self.setFixedSize(60, 56)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(1)
-
-        thumb = QLabel()
-        thumb.setObjectName("image_thumb")
-        thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        if self.is_image:
-            pixmap = load_pixmap(self.source)
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(
-                    56,
-                    38,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                thumb.setPixmap(scaled)
-            else:
-                thumb.setText("IMG")
-        else:
-            ext = os.path.splitext(self.source)[1].lower() or "FILE"
-            thumb.setText(ext)
-            thumb.setStyleSheet("font-size: 10px; font-weight: bold; color: #555;")
-            thumb.setToolTip(os.path.basename(self.source))
-
-        layout.addWidget(thumb)
-
-        if not self.is_image:
-            name_lbl = QLabel(os.path.basename(self.source))
-            name_lbl.setObjectName("file_name_lbl")
-            name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            name_lbl.setStyleSheet("font-size: 9px; color: #666;")
-            font_metrics = name_lbl.fontMetrics()
-            elided = name_lbl.fontMetrics().elidedText(
-                name_lbl.text(),
-                Qt.TextElideMode.ElideMiddle,
-                56,
-            )
-            name_lbl.setText(elided)
-            layout.addWidget(name_lbl)
-
-        remove_btn = QPushButton("×")
-        remove_btn.setObjectName("image_remove_btn")
-        remove_btn.setFixedSize(14, 14)
-        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.source))
-        remove_btn.setParent(self)
-        remove_btn.move(self.width() - 16, 2)
-        remove_btn.show()
-
-
-class AttachmentPreviewStrip(QWidget):
-    """Preview strip for attached files/images."""
-
-    remove_requested = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("image_preview")
-        self._items: dict[str, AttachmentPreviewItem] = {}
-
-        self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(4, 0, 4, 0)
-        self._layout.setSpacing(4)
-        self._layout.addStretch()
-        self.setVisible(False)
-
-    def add_attachment(self, source: str, *, is_image: bool) -> None:
-        if source in self._items:
-            return
-
-        item = AttachmentPreviewItem(source, is_image=is_image)
-        item.remove_requested.connect(self.remove_requested.emit)
-        self._items[source] = item
-        self._layout.insertWidget(self._layout.count() - 1, item)
-        self.setVisible(True)
-
-    def remove_attachment(self, source: str) -> None:
-        item = self._items.pop(source, None)
-        if item is not None:
-            item.deleteLater()
-        if not self._items:
-            self.setVisible(False)
-
-    def clear_attachments(self) -> None:
-        for source in list(self._items.keys()):
-            self.remove_attachment(source)
-
-
-class ComposerToolbar(QWidget):
-    """Toolbar widget for provider/model/mode controls."""
-
-    attach_requested = pyqtSignal()
-    conversation_settings_requested = pyqtSignal()
-    provider_settings_requested = pyqtSignal()
-    prompt_optimize_requested = pyqtSignal()
-    send_requested = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._setup_ui()
-
-    def _setup_ui(self) -> None:
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        self.attach_btn = self._make_button("📎", "添加文件/图片")
-        self.attach_btn.clicked.connect(self.attach_requested.emit)
-        layout.addWidget(self.attach_btn)
-
-        self.provider_combo = QComboBox()
-        self.provider_combo.setObjectName("provider_combo")
-        self.provider_combo.setMinimumWidth(70)
-        self.provider_combo.setMaximumWidth(110)
-        layout.addWidget(self.provider_combo)
-
-        self.model_combo = QComboBox()
-        self.model_combo.setObjectName("model_combo")
-        self.model_combo.setMinimumWidth(120)
-        self.model_combo.setMaximumWidth(200)
-        self.model_combo.setEditable(True)
-        layout.addWidget(self.model_combo)
-
-        self.mode_combo = QComboBox()
-        self.mode_combo.setObjectName("mode_combo")
-        self.mode_combo.setMinimumWidth(70)
-        self.mode_combo.setToolTip("选择对话模式")
-        layout.addWidget(self.mode_combo)
-
-        self.thinking_toggle = self._make_toggle("🧠", "显示思考过程")
-        layout.addWidget(self.thinking_toggle)
-
-        self.mcp_toggle = self._make_toggle("🔌", "启用 MCP 工具")
-        layout.addWidget(self.mcp_toggle)
-
-        self.search_toggle = self._make_toggle("🔍", "启用网络搜索")
-        layout.addWidget(self.search_toggle)
-
-        self.conv_settings_btn = self._make_button("⚙", "对话设置 (采样参数/系统提示)")
-        self.conv_settings_btn.clicked.connect(self.conversation_settings_requested.emit)
-        layout.addWidget(self.conv_settings_btn)
-
-        self.provider_settings_btn = self._make_button("🔧", "配置服务商 (API/Key/模型列表)")
-        self.provider_settings_btn.clicked.connect(self.provider_settings_requested.emit)
-        layout.addWidget(self.provider_settings_btn)
-
-        layout.addStretch()
-
-        self.prompt_optimize_btn = self._make_button("✨", "优化提示词")
-        self.prompt_optimize_btn.clicked.connect(self.prompt_optimize_requested.emit)
-        layout.addWidget(self.prompt_optimize_btn)
-
-        self.send_btn = self._make_button("➤", "发送消息 (Ctrl+Enter)")
-        self.send_btn.clicked.connect(self.send_requested.emit)
-        layout.addWidget(self.send_btn)
-
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def _make_button(self, text: str, tooltip: str) -> QToolButton:
-        button = QToolButton()
-        button.setObjectName("toolbar_btn")
-        button.setText(text)
-        button.setToolTip(tooltip)
-        return button
-
-    def _make_toggle(self, text: str, tooltip: str) -> QToolButton:
-        button = self._make_button(text, tooltip)
-        button.setCheckable(True)
-        return button
-
-    def set_streaming_state(self, is_streaming: bool, style) -> None:
-        if is_streaming:
-            try:
-                self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_MediaStop))
-            except Exception:
-                pass
-            self.send_btn.setToolTip("停止生成")
-            self.prompt_optimize_btn.setEnabled(False)
-            self.mcp_toggle.setEnabled(False)
-            self.search_toggle.setEnabled(False)
-            return
-
-        try:
-            self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_ArrowRight))
-        except Exception:
-            pass
-        self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
-
-    def set_prompt_optimize_busy(self, busy: bool, *, is_streaming: bool) -> None:
-        self.prompt_optimize_btn.setEnabled((not busy) and (not is_streaming))
-        self.prompt_optimize_btn.setToolTip("优化中..." if busy else "优化提示词")
-
-class FileCompleterPopup(QListWidget):
-    """Popup list for file completion"""
-    
-    file_selected = pyqtSignal(str)
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setStyleSheet("""
-            QListWidget {
-                background-color: #ffffff;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-            }
-            QListWidget::item {
-                padding: 4px 8px;
-            }
-            QListWidget::item:selected {
-                background-color: #007acc;
-                color: white;
-            }
-        """)
-        self.hide()
-        
-    def show_completions(self, files: List[str], point):
-        self.clear()
-        if not files:
-            self.hide()
-            return
-            
-        self.addItems(files)
-        self.setCurrentRow(0)
-        
-        # Calculate size
-        h = min(len(files) * 26 + 4, 200)
-        w = 200
-        self.resize(w, h)
-        self.move(point)
-        self.show()
-        self.raise_()
-
-    def keyPressEvent(self, event):
-        # Forward keys to parent if needed, but usually handled by event filter in TextEdit
-        super().keyPressEvent(event)
-
-
-class MessageTextEdit(QTextEdit):
-    """Custom text edit with Ctrl+Enter and inline mention completion."""
-    
-    send_requested = pyqtSignal()
-    attachments_received = pyqtSignal(list)
-    file_reference_added = pyqtSignal(str) # Emits full path
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.work_dir: Optional[str] = None
-        self._command_registry: Optional[CommandRegistry] = None
-        self._mention_context_provider: Optional[Callable[[], Dict[str, Any]]] = None
-        self._completion_candidates: dict[str, MentionCandidate] = {}
-        self._active_query: Optional[MentionQuery] = None
-        
-        # Completion popup
-        self.completer_popup = FileCompleterPopup(self)
-        self.completer_popup.itemClicked.connect(self._on_completion_selected)
-        self.completer_popup.hide()
-        
-        self._completing = False
-        self._completion_prefix = ""
-        self._completion_start_pos = -1
-
-    def set_work_dir(self, path: str):
-        self.work_dir = path
-
-    def configure_command_registry(
-        self,
-        registry: CommandRegistry,
-        context_provider: Callable[[], Dict[str, Any]],
-    ) -> None:
-        self._command_registry = registry
-        self._mention_context_provider = context_provider
-
-    def _refresh_modes(self, work_dir: str) -> None:
-        try:
-            cur_slug = str(self.mode_combo.currentData() or '')
-        except Exception:
-            cur_slug = ''
-
-        try:
-            self.mode_combo.blockSignals(True)
-            self.mode_combo.clear()
-            # Modes are global user configuration (APPDATA/PyChat/modes.json), not per-workspace.
-            self._mode_manager = ModeManager(None)
-            for m in self._mode_manager.list_modes():
-                self.mode_combo.addItem(m.name, m.slug)
-            if cur_slug:
-                idx = self.mode_combo.findData(cur_slug)
-                if idx >= 0:
-                    self.mode_combo.setCurrentIndex(idx)
-        finally:
-            try:
-                self.mode_combo.blockSignals(False)
-            except Exception:
-                pass
-
-    def insertFromMimeData(self, source):
-        # Handle screenshot paste / drag-drop image -> add as attachment instead of inserting into text.
-        try:
-            data_urls, file_paths = extract_images_from_mime(source)
-            sources: list[str] = []
-            sources.extend(data_urls)
-            sources.extend(file_paths)
-            if sources:
-                self.attachments_received.emit(sources)
-                return
-        except Exception:
-            pass
-
-        super().insertFromMimeData(source)
-    
-    def keyPressEvent(self, event: QKeyEvent):
-        if self.completer_popup.isVisible():
-            if event.key() == Qt.Key.Key_Down:
-                row = self.completer_popup.currentRow()
-                if row < self.completer_popup.count() - 1:
-                    self.completer_popup.setCurrentRow(row + 1)
-                return
-            elif event.key() == Qt.Key.Key_Up:
-                row = self.completer_popup.currentRow()
-                if row > 0:
-                    self.completer_popup.setCurrentRow(row - 1)
-                return
-            elif event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Tab):
-                if self.completer_popup.currentItem():
-                    self._on_completion_selected(self.completer_popup.currentItem())
-                return
-            elif event.key() == Qt.Key.Key_Escape:
-                self.completer_popup.hide()
-                return
-
-        if (event.key() == Qt.Key.Key_Return and 
-            event.modifiers() == Qt.KeyboardModifier.ControlModifier):
-            self.send_requested.emit()
-            return
-            
-        super().keyPressEvent(event)
-        
-        # Check for completion trigger
-        self._check_completion()
-
-    def _check_completion(self):
-        if not self._command_registry or not self._mention_context_provider:
-            self.completer_popup.hide()
-            return
-
-        cursor = self.textCursor()
-        result = self._command_registry.get_mention_candidates(
-            self.toPlainText(),
-            cursor.position(),
-            self._mention_context_provider(),
-        )
-        if result:
-            query, candidates = result
-            self._show_completer(query, candidates)
-            return
-
-        self._active_query = None
-        self._completion_candidates.clear()
-        self.completer_popup.hide()
-
-    def _show_completer(self, query: MentionQuery, candidates: List[MentionCandidate]):
-        if not candidates:
-            self.completer_popup.hide()
-            return
-
-        rect = self.cursorRect()
-        point = self.viewport().mapToGlobal(rect.bottomLeft())
-        point.setY(point.y() + 5)
-
-        self._active_query = query
-        self._completion_prefix = query.prefix
-        self._completion_start_pos = query.start_pos
-        self._completion_candidates = {candidate.label: candidate for candidate in candidates}
-        self.completer_popup.show_completions([candidate.label for candidate in candidates], point)
-
-    def _on_completion_selected(self, item):
-        if not self._command_registry or not self._mention_context_provider or not self._active_query:
-            return
-
-        display_name = item.text()
-        candidate = self._completion_candidates.get(display_name)
-        if not display_name or candidate is None:
-            return
-
-        cursor = self.textCursor()
-        cursor.setPosition(self._active_query.start_pos)
-        cursor.setPosition(self._active_query.end_pos, QTextCursor.MoveMode.KeepAnchor)
-
-        if not candidate.terminal:
-            cursor.insertText(f"{self._active_query.trigger}{candidate.value}")
-            self.setTextCursor(cursor)
-            self.completer_popup.hide()
-            self._check_completion()
-            return
-
-        if candidate.kind != MentionKind.FILE:
-            insert_text = candidate.insert_text or f"{self._active_query.trigger}{candidate.value}"
-            cursor.insertText(insert_text)
-            self.setTextCursor(cursor)
-            self.completer_popup.hide()
-            self._active_query = None
-            self._completion_candidates.clear()
-            return
-
-        full_path = self._command_registry.resolve_mention_candidate(
-            candidate,
-            self._mention_context_provider(),
-        )
-        if not full_path:
-            self.completer_popup.hide()
-            return
-
-        cursor.removeSelectedText()
-        self.setTextCursor(cursor)
-        self.completer_popup.hide()
-        self._active_query = None
-        self._completion_candidates.clear()
-        self.file_reference_added.emit(full_path)
+# Extracted sub-components
+from ui.widgets.input.attachment_strip import AttachmentPreviewItem, AttachmentPreviewStrip
+from ui.widgets.input.composer_toolbar import ComposerToolbar
+from ui.widgets.input.text_editor import FileCompleterPopup, MessageTextEdit
+
+logger = logging.getLogger(__name__)
 
 
 class InputArea(QWidget):
     """Input area - single-row compact toolbar + input"""
     
     message_sent = pyqtSignal(str, list)
-    slash_command_result = pyqtSignal(object)  # CommandResult from slash commands
+    slash_command_result = pyqtSignal(object)  # CommandResult from / or # commands
     cancel_requested = pyqtSignal()
     conversation_settings_requested = pyqtSignal()
     provider_settings_requested = pyqtSignal()  # New: quick access to provider config
@@ -508,20 +77,21 @@ class InputArea(QWidget):
         self.text_input.set_work_dir(path)
         try:
             self._refresh_modes(path)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to refresh modes after work_dir change: %s", e)
 
         # Re-apply mode policy after refresh (modes.json may change groups).
         try:
             self._apply_mode_policy(apply_defaults=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to apply mode policy after work_dir change: %s", e)
 
     def _refresh_modes(self, work_dir: str) -> None:
         """Reload modes from global user config and keep selection if possible."""
         try:
             cur_slug = str(self.mode_combo.currentData() or '')
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get current mode slug: %s", e)
             cur_slug = ''
 
         try:
@@ -537,8 +107,8 @@ class InputArea(QWidget):
         finally:
             try:
                 self.mode_combo.blockSignals(False)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to unblock mode_combo signals: %s", e)
         
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -604,14 +174,14 @@ class InputArea(QWidget):
         # Do not force defaults here; the current conversation/settings will sync later.
         try:
             self._apply_mode_policy(apply_defaults=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to apply initial mode policy: %s", e)
 
     def _on_mode_changed(self, index: int) -> None:
         try:
             self._apply_mode_policy(apply_defaults=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to apply mode policy on change: %s", e)
 
     def _apply_mode_policy(self, apply_defaults: bool = True) -> None:
         """Apply mode-derived policy to Thinking/MCP/Search toggles.
@@ -659,8 +229,8 @@ class InputArea(QWidget):
             self.text_input.setFocus()
             try:
                 self._apply_mode_policy(apply_defaults=False)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to apply mode policy after streaming stop: %s", e)
 
 
     def set_prompt_optimize_busy(self, busy: bool) -> None:
@@ -669,14 +239,15 @@ class InputArea(QWidget):
     def _on_prompt_optimize_clicked(self) -> None:
         try:
             text = (self.text_input.toPlainText() or "").strip()
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get text for optimize: %s", e)
             text = ""
         if not text:
             return
         try:
             self.set_prompt_optimize_busy(True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to set optimize busy state: %s", e)
         self.prompt_optimize_requested.emit(text)
 
     def _on_send_btn_clicked(self):
@@ -718,7 +289,8 @@ class InputArea(QWidget):
         try:
             provider_id = self.get_selected_provider_id()
             model = (self.get_selected_model() or "").strip()
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get provider/model for signal: %s", e)
             return
         self.provider_model_changed.emit(provider_id, model)
 
@@ -734,7 +306,8 @@ class InputArea(QWidget):
     def get_selected_mode_slug(self) -> str:
         try:
             return str(self.mode_combo.currentData() or '').strip() or (self.get_selected_mode() or '').strip().lower()
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get mode slug from combo data: %s", e)
             return (self.get_selected_mode() or '').strip().lower()
 
     def set_show_thinking(self, enabled: bool):
@@ -782,7 +355,8 @@ class InputArea(QWidget):
                 enable_search=bool(self._search_enabled),
             )
             return bool(search), bool(mcp)
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get effective tool flags from mode policy: %s", e)
             return bool(self._search_enabled), bool(self._mcp_enabled)
 
     def build_run_policy(self, *, enable_thinking: Optional[bool] = None, retry_config=None) -> RunPolicy:
@@ -794,7 +368,8 @@ class InputArea(QWidget):
 
         try:
             slug = self.get_selected_mode_slug()
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get mode slug for run policy: %s", e)
             slug = "chat"
 
         # Tool flags are clamped by mode feature policy.
@@ -839,8 +414,8 @@ class InputArea(QWidget):
 
         try:
             self.text_input.setFocus()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to set focus after attachments: %s", e)
 
     def _add_attachment_file(self, path: str):
         # Check if already attached
@@ -872,7 +447,8 @@ class InputArea(QWidget):
     def _build_command_context(self) -> Dict[str, Any]:
         try:
             available_tools = self._tool_schema_provider() if self._tool_schema_provider else []
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get tool schemas for command context: %s", e)
             available_tools = []
 
         return {
@@ -886,8 +462,8 @@ class InputArea(QWidget):
             ],
         }
 
-    def _try_handle_slash_command(self, content: str) -> bool:
-        if not self._command_registry.is_slash_command(content):
+    def _try_handle_command(self, content: str) -> bool:
+        if not self._command_registry.is_command(content):
             return False
 
         result = self._command_registry.execute(content, self._build_command_context())
@@ -914,7 +490,7 @@ class InputArea(QWidget):
     def _send_message(self):
         content = self.text_input.toPlainText().strip()
 
-        if content.startswith("/") and self._try_handle_slash_command(content):
+        if self._try_handle_command(content):
             return
 
         if not content and not self._attachments:

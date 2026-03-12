@@ -22,7 +22,9 @@ from models.conversation import Conversation, Message
 from models.provider import Provider
 from models.state import SessionState
 from core.llm.token_utils import estimate_conversation_tokens
+from core.prompts.history import count_user_turn_blocks, is_control_message
 from core.prompts.templates import SUMMARY_SYSTEM_PROMPT
+from core.prompts.user_context import extract_user_request
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +44,8 @@ class CondensePolicy:
     max_active_messages: int = 20
     token_threshold_ratio: float = 0.7
 
-    # Archive behaviour
-    keep_last_n: int = 10
+    # Archive behaviour - 修改为保留最后 3 条消息（参考 VSCode Copilot）
+    keep_last_n: int = 3  # 从 10 改为 3，保留最后 3 条完整消息
 
 
 # ---------------------------------------------------------------------------
@@ -89,28 +91,43 @@ class ContextCondenser:
         if not messages:
             return False
 
-        active_indices = [
-            i for i, m in enumerate(messages)
-            if m.role != "system" and not m.condense_parent
+        active_indexed = [
+            (i, m) for i, m in enumerate(messages)
+            if m.role != "system"
+            and not m.condense_parent
+            and not getattr(m, "truncation_parent", None)
         ]
 
-        if len(active_indices) <= keep_last_n:
+        blocks: List[List[tuple[int, Message]]] = []
+        current_block: List[tuple[int, Message]] = []
+        for item in active_indexed:
+            index, msg = item
+            if msg.role == "user" and not is_control_message(Message(role="user", content=extract_user_request(msg.content or ""))):
+                if current_block:
+                    blocks.append(current_block)
+                current_block = [item]
+                continue
+            if not current_block:
+                current_block = [item]
+            else:
+                current_block.append(item)
+        if current_block:
+            blocks.append(current_block)
+
+        user_block_indexes = [
+            idx for idx, block in enumerate(blocks)
+            if any(msg.role == "user" and not is_control_message(Message(role="user", content=extract_user_request(msg.content or ""))) for _, msg in block)
+        ]
+        if len(user_block_indexes) <= keep_last_n:
             return False
 
-        indices_to_keep = set(active_indices[-keep_last_n:])
-
-        # 保底: ensure at least 1 user message is kept
-        kept_has_user = any(
-            messages[i].role == "user" for i in indices_to_keep
-        )
-        if not kept_has_user:
-            # Find the latest user message among active indices and force-keep it
-            for i in reversed(active_indices):
-                if messages[i].role == "user":
-                    indices_to_keep.add(i)
-                    break
-
-        indices_to_summarize = [i for i in active_indices if i not in indices_to_keep]
+        first_keep_block = user_block_indexes[-keep_last_n]
+        indices_to_keep = {
+            index
+            for block in blocks[first_keep_block:]
+            for index, _msg in block
+        }
+        indices_to_summarize = [index for index, _msg in active_indexed if index not in indices_to_keep]
         if not indices_to_summarize:
             return False
 
@@ -246,10 +263,15 @@ class ContextCondenser:
             and not getattr(m, "truncation_parent", None)
             and m.role != "system"
         ])
+        turn_block_count = count_user_turn_blocks(conversation.messages)
         current_tokens = estimate_conversation_tokens(conversation)
         threshold = int(context_window_limit * pol.token_threshold_ratio)
 
-        if active_count <= pol.max_active_messages and current_tokens <= threshold:
+        if (
+            turn_block_count <= pol.keep_last_n
+            and active_count <= pol.max_active_messages
+            and current_tokens <= threshold
+        ):
             return
 
         state = conversation.get_state()
@@ -280,7 +302,13 @@ class ContextCondenser:
             if m.role in ("system", "tool"):
                 continue
             role = (m.role or "").upper()
-            content = m.summary if m.summary else m.content
+            if m.role == "user":
+                base_content = extract_user_request(m.summary if m.summary else m.content)
+                if not base_content or is_control_message(Message(role="user", content=base_content)):
+                    continue
+                content = base_content
+            else:
+                content = m.summary if m.summary else m.content
             block = f"{role}:\n{content or ''}".strip()
 
             if m.role == "assistant" and m.tool_calls:
@@ -328,6 +356,6 @@ class ContextCondenser:
                     val = getattr(overrides, field_name, None)
                     if val is not None:
                         setattr(pol, field_name, val)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to apply compression policy overrides: %s", e)
         return pol

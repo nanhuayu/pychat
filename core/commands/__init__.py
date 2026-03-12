@@ -1,18 +1,19 @@
-"""Slash command system.
+"""Command system.
 
-Intercepts user input starting with ``/`` and routes to registered
-command handlers.  Built-in commands: ``/compact``, ``/mode``,
-``/tools``, ``/help``, ``/clear``.
+Intercepts user input starting with ``/`` or ``#`` and routes registered
+command names to command handlers. File mentions such as ``#src/main.py``
+remain part of the inline mention system.
 
 Extensible via ``~/.PyChat/commands/`` or ``.pychat/commands/``.
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 
+from core.commands.dispatcher import dispatch_command
+from core.commands.parser import is_command_text, is_slash_command, parse_command_text
+from core.commands.types import CommandAction, CommandResult, SlashCommand
 from core.commands.mentions import (
     MentionCandidate,
     MentionKind,
@@ -25,36 +26,8 @@ from core.modes.manager import ModeManager
 logger = logging.getLogger(__name__)
 
 
-class CommandAction(str, Enum):
-    """The type of action a command result triggers."""
-    DISPLAY = "display"           # Show text to user in chat
-    COMPACT = "compact"           # Trigger context condensation
-    CLEAR = "clear"               # Clear conversation / new conversation
-    MODE_SWITCH = "mode_switch"   # Switch mode (data = slug)
-    SKILL = "skill"               # Activate skill (data = skill_name)
-    EXPORT = "export"             # Export conversation (data = format)
-
-
-@dataclass
-class CommandResult:
-    """Structured result from a slash command."""
-    action: CommandAction = CommandAction.DISPLAY
-    data: Any = None
-    display_text: str = ""
-
-
-@dataclass
-class SlashCommand:
-    """A single slash command definition."""
-
-    name: str
-    description: str
-    handler: Callable[..., Union[str, CommandResult]]
-    aliases: List[str] = field(default_factory=list)
-
-
 class CommandRegistry:
-    """Registry of slash commands and inline mention providers."""
+    """Registry of commands and inline mention providers."""
 
     def __init__(self) -> None:
         self._commands: Dict[str, SlashCommand] = {}
@@ -81,18 +54,22 @@ class CommandRegistry:
                 result.append(cmd)
         return result
 
+    def has(self, name: str) -> bool:
+        return bool(name) and name in self._commands
+
+    def is_command(self, text: str) -> bool:
+        prefix, cmd_name, _args = parse_command_text(text)
+        if not prefix or not cmd_name:
+            return False
+        return self.has(cmd_name)
+
     def is_slash_command(self, text: str) -> bool:
-        return bool(text and text.strip().startswith("/"))
+        return is_slash_command(text) and self.is_command(text)
 
     def parse(self, text: str) -> tuple[str, str]:
-        """Parse ``/command args`` → ``("command", "args")``."""
-        stripped = text.strip()
-        if not stripped.startswith("/"):
-            return ("", stripped)
-        parts = stripped[1:].split(None, 1)
-        cmd_name = parts[0] if parts else ""
-        args = parts[1] if len(parts) > 1 else ""
-        return (cmd_name.lower(), args.strip())
+        """Parse command text → ``("command", "args")``."""
+        _prefix, cmd_name, args = parse_command_text(text)
+        return (cmd_name, args)
 
     def get_mention_candidates(
         self,
@@ -127,19 +104,9 @@ class CommandRegistry:
         return candidate.value
 
     def execute(self, text: str, context: Optional[Dict[str, Any]] = None) -> Optional[CommandResult]:
-        """Execute a slash command and return a CommandResult (or None if not found)."""
-        cmd_name, args = self.parse(text)
-        cmd = self.get(cmd_name)
-        if not cmd:
-            return None
+        """Execute a registered command and return a CommandResult."""
         try:
-            raw = cmd.handler(args, context or {})
-            # Normalize legacy string returns to CommandResult
-            if isinstance(raw, CommandResult):
-                return raw
-            if isinstance(raw, str):
-                return CommandResult(action=CommandAction.DISPLAY, display_text=raw)
-            return CommandResult(action=CommandAction.DISPLAY, display_text=str(raw))
+            return dispatch_command(text, commands=self._commands, context=context)
         except Exception as e:
             return CommandResult(action=CommandAction.DISPLAY, display_text=f"Command error: {e}")
 
@@ -239,157 +206,51 @@ class CommandRegistry:
     # ------------------------------------------------------------------
 
     def _register_builtins(self) -> None:
+        from core.commands import handlers as h
+
         self.register(SlashCommand(
             name="help",
             description="Show available slash commands",
-            handler=self._cmd_help,
+            handler=lambda args, ctx: h.cmd_help(args, ctx, list_commands=self.list_commands),
         ))
         self.register(SlashCommand(
             name="compact",
             description="Manually condense the conversation context",
-            handler=self._cmd_compact,
+            handler=h.cmd_compact,
         ))
         self.register(SlashCommand(
             name="mode",
             description="Switch conversation mode (e.g. /mode code)",
-            handler=self._cmd_mode,
+            handler=h.cmd_mode,
         ))
         self.register(SlashCommand(
             name="tools",
             description="List available tools for the current mode",
-            handler=self._cmd_tools,
+            handler=h.cmd_tools,
         ))
         self.register(SlashCommand(
             name="clear",
             description="Clear conversation history (keep system prompt)",
-            handler=self._cmd_clear,
+            handler=h.cmd_clear,
         ))
         self.register(SlashCommand(
             name="skill",
             description="Load a skill (e.g. /skill code-review) or list skills",
-            handler=self._cmd_skill,
+            handler=h.cmd_skill,
         ))
         self.register(SlashCommand(
             name="plan",
             description="View or update the session plan document",
-            handler=self._cmd_plan,
+            handler=h.cmd_plan,
         ))
         self.register(SlashCommand(
             name="memory",
             description="View or update the session memory document",
-            handler=self._cmd_memory,
+            handler=h.cmd_memory,
         ))
         self.register(SlashCommand(
             name="export",
             description="Export conversation (e.g. /export markdown)",
-            handler=self._cmd_export,
+            handler=h.cmd_export,
             aliases=["save"],
         ))
-
-    def _cmd_help(self, args: str, ctx: Dict[str, Any]) -> str:
-        lines = ["**Available commands:**"]
-        for cmd in self.list_commands():
-            lines.append(f"  `/{cmd.name}` — {cmd.description}")
-        return "\n".join(lines)
-
-    def _cmd_compact(self, args: str, ctx: Dict[str, Any]) -> CommandResult:
-        return CommandResult(action=CommandAction.COMPACT)
-
-    def _cmd_mode(self, args: str, ctx: Dict[str, Any]) -> CommandResult:
-        if not args.strip():
-            current = ctx.get("current_mode", "chat")
-            return CommandResult(
-                action=CommandAction.DISPLAY,
-                display_text=f"Current mode: **{current}**. Usage: `/mode <slug>` (e.g. `/mode code`)",
-            )
-        return CommandResult(action=CommandAction.MODE_SWITCH, data=args.strip())
-
-    def _cmd_tools(self, args: str, ctx: Dict[str, Any]) -> str:
-        tools = ctx.get("available_tools", [])
-        if not tools:
-            return "No tools available in current mode."
-        lines = ["**Available tools:**"]
-        for t in tools:
-            fn = t.get("function", {})
-            lines.append(f"  `{fn.get('name', '?')}` — {fn.get('description', '')[:80]}")
-        return "\n".join(lines)
-
-    def _cmd_clear(self, args: str, ctx: Dict[str, Any]) -> CommandResult:
-        return CommandResult(action=CommandAction.CLEAR)
-
-    def _cmd_skill(self, args: str, ctx: Dict[str, Any]) -> CommandResult:
-        from core.skills import SkillsManager
-        mgr = SkillsManager()
-        if not args.strip():
-            skills = mgr.list_skills()
-            if not skills:
-                return CommandResult(
-                    action=CommandAction.DISPLAY,
-                    display_text="No skills found. Add `.md` files to `~/.PyChat/skills/` or `.pychat/skills/`.",
-                )
-            lines = ["**Available skills:**"]
-            for s in skills:
-                tags = f" [{', '.join(s.tags)}]" if s.tags else ""
-                lines.append(f"  `{s.name}`{tags} — {s.source}")
-            return CommandResult(action=CommandAction.DISPLAY, display_text="\n".join(lines))
-        name = args.strip().lower()
-        skill = mgr.get(name)
-        if not skill:
-            return CommandResult(
-                action=CommandAction.DISPLAY,
-                display_text=f"Skill `{name}` not found. Use `/skill` to list available skills.",
-            )
-        return CommandResult(action=CommandAction.SKILL, data=name)
-
-    def _cmd_plan(self, args: str, ctx: Dict[str, Any]) -> str:
-        conv = ctx.get("conversation")
-        if not conv:
-            return "No active conversation."
-        state = conv.get_state()
-        doc = state.documents.get("plan")
-        if args.strip():
-            from models.state import SessionDocument
-            state.documents["plan"] = SessionDocument(name="plan", content=args.strip())
-            conv.set_state(state)
-            return "Plan updated."
-        if doc and doc.content:
-            return f"**Session Plan:**\n{doc.content}"
-        return "No plan set. Usage: `/plan <content>` to set one."
-
-    def _cmd_memory(self, args: str, ctx: Dict[str, Any]) -> str:
-        conv = ctx.get("conversation")
-        if not conv:
-            return "No active conversation."
-        state = conv.get_state()
-        if args.strip():
-            # Parse "key=value" or just append to memory doc
-            if "=" in args:
-                key, _, value = args.partition("=")
-                state.memory[key.strip()] = value.strip()
-                conv.set_state(state)
-                return f"Memory '{key.strip()}' saved."
-            else:
-                from models.state import SessionDocument
-                doc = state.documents.get("memory")
-                if doc:
-                    doc.content += "\n" + args.strip()
-                else:
-                    state.documents["memory"] = SessionDocument(name="memory", content=args.strip())
-                conv.set_state(state)
-                return "Memory appended."
-        # Show current memory
-        lines = []
-        if state.memory:
-            lines.append("**Key-Value Memory:**")
-            for k, v in state.memory.items():
-                lines.append(f"  - **{k}**: {v}")
-        doc = state.documents.get("memory")
-        if doc and doc.content:
-            lines.append(f"\n**Memory Document:**\n{doc.content}")
-        if not lines:
-            return "No memory stored. Usage: `/memory key=value` or `/memory <text>`"
-        return "\n".join(lines)
-
-    def _cmd_export(self, args: str, ctx: Dict[str, Any]) -> CommandResult:
-        fmt = args.strip() or "markdown"
-        return CommandResult(action=CommandAction.EXPORT, data=fmt)

@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-    QGroupBox,
-    QVBoxLayout as QVBox,
-    QFormLayout,
-    QCheckBox,
-    QComboBox,
-    QLineEdit,
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QGroupBox, QVBoxLayout as QVBox, QCheckBox
 
 from models.search_config import SearchConfig
+from ui.utils.form_builder import FormSection
 
 
 class SearchPage(QWidget):
@@ -30,51 +21,38 @@ class SearchPage(QWidget):
 
         enable_group = QGroupBox("搜索服务")
         enable_layout = QVBox(enable_group)
-
         self.search_enabled_check = QCheckBox("启用网络搜索")
         self.search_enabled_check.setChecked(bool(search_config.enabled))
         self.search_enabled_check.setToolTip("允许模型在需要时搜索互联网获取最新信息")
         enable_layout.addWidget(self.search_enabled_check)
-
         layout.addWidget(enable_group)
 
-        provider_group = QGroupBox("搜索引擎")
-        provider_layout = QFormLayout(provider_group)
+        provider = FormSection("搜索引擎")
+        self.search_provider_combo = provider.add_combo(
+            "搜索引擎:", items=["Tavily AI", "Google (SerpAPI)", "SearXNG (自托管)"],
+            current_index={"tavily": 0, "google": 1, "searxng": 2}.get(search_config.provider, 0),
+        )
+        self.search_api_key_edit = provider.add_line_edit(
+            "API Key:", text=search_config.api_key,
+            placeholder="API Key (Tavily/SerpAPI)", echo_password=True,
+        )
+        self.search_api_base_edit = provider.add_line_edit(
+            "API 地址:", text=search_config.api_base,
+            placeholder="http://localhost:8888 (仅 SearXNG)",
+        )
+        layout.addWidget(provider.group)
 
-        self.search_provider_combo = QComboBox()
-        self.search_provider_combo.addItems(["Tavily AI", "Google (SerpAPI)", "SearXNG (自托管)"])
-        providers_map = {"tavily": 0, "google": 1, "searxng": 2}
-        self.search_provider_combo.setCurrentIndex(providers_map.get(search_config.provider, 0))
-        provider_layout.addRow("搜索引擎:", self.search_provider_combo)
-
-        self.search_api_key_edit = QLineEdit()
-        self.search_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.search_api_key_edit.setText(search_config.api_key)
-        self.search_api_key_edit.setPlaceholderText("API Key (Tavily/SerpAPI)")
-        provider_layout.addRow("API Key:", self.search_api_key_edit)
-
-        self.search_api_base_edit = QLineEdit()
-        self.search_api_base_edit.setText(search_config.api_base)
-        self.search_api_base_edit.setPlaceholderText("http://localhost:8888 (仅 SearXNG)")
-        provider_layout.addRow("API 地址:", self.search_api_base_edit)
-
-        layout.addWidget(provider_group)
-
-        options_group = QGroupBox("搜索选项")
-        options_layout = QFormLayout(options_group)
-
-        self.search_max_results = QComboBox()
-        self.search_max_results.addItems(["3", "5", "10", "20"])
+        options = FormSection("搜索选项")
+        results_items = ["3", "5", "10", "20"]
         cur = str(getattr(search_config, "max_results", 5))
-        idx = ["3", "5", "10", "20"].index(cur) if cur in ["3", "5", "10", "20"] else 1
-        self.search_max_results.setCurrentIndex(idx)
-        options_layout.addRow("结果数量:", self.search_max_results)
-
-        self.search_include_date = QCheckBox("结果包含日期")
-        self.search_include_date.setChecked(bool(search_config.include_date))
-        options_layout.addRow("", self.search_include_date)
-
-        layout.addWidget(options_group)
+        idx = results_items.index(cur) if cur in results_items else 1
+        self.search_max_results = options.add_combo(
+            "结果数量:", items=results_items, current_index=idx,
+        )
+        self.search_include_date = options.add_checkbox(
+            "结果包含日期", checked=bool(search_config.include_date),
+        )
+        layout.addWidget(options.group)
         layout.addStretch()
 
     def collect(self) -> SearchConfig:

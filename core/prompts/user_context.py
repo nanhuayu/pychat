@@ -12,22 +12,36 @@ from __future__ import annotations
 
 import os
 import platform
-from typing import Any, Dict, List, Optional
+import re
+from dataclasses import replace
+from typing import List
 
 from models.conversation import Conversation, Message
 from utils.file_context import get_file_tree
+
+
+RUNTIME_CONTEXT_TAGS = (
+    "environment_info",
+    "workspace_info",
+    "conversation_summary",
+)
+_USER_REQUEST_RE = re.compile(r"<user_request>\s*(.*?)\s*</user_request>", re.DOTALL)
+_RUNTIME_BLOCK_RE = re.compile(
+    r"<(environment_info|workspace_info|conversation_summary)>.*?</\1>\s*",
+    re.DOTALL,
+)
 
 
 # ---------------------------------------------------------------------------
 # Section builders
 # ---------------------------------------------------------------------------
 
-def build_environment_info() -> str:
+def build_environment_info(*, cwd: str | None = None) -> str:
     """OS / shell / date — always available."""
     os_name = platform.system()
     os_release = platform.release()
     shell = os.environ.get("SHELL") or os.environ.get("COMSPEC") or "unknown"
-    cwd = os.getcwd()
+    cwd = os.path.abspath(cwd or os.getcwd())
     lines = [
         f"<environment_info>",
         f"OS: {os_name} {os_release}",
@@ -59,6 +73,54 @@ def build_conversation_summary(conversation: Conversation) -> str:
         return ""
 
 
+def extract_user_request(content: str) -> str:
+    """Strip injected runtime tags and recover the pure user request text."""
+    raw = str(content or "")
+    match = _USER_REQUEST_RE.search(raw)
+    if match:
+        return match.group(1).strip()
+    return _RUNTIME_BLOCK_RE.sub("", raw).strip()
+
+
+def normalize_user_message(message: Message) -> Message:
+    """Return a copy of a user message with runtime context removed from content."""
+    if message.role != "user":
+        return message
+    return replace(message, content=extract_user_request(message.content))
+
+
+def build_runtime_context_block(
+    conversation: Conversation,
+    *,
+    include_environment: bool = True,
+    include_workspace: bool = True,
+    include_summary: bool = False,
+    max_depth: int = 2,
+) -> str:
+    """Build the ephemeral runtime context attached to the latest user request."""
+    work_dir = getattr(conversation, "work_dir", None) or "."
+    sections: List[str] = []
+    if include_environment:
+        sections.append(build_environment_info(cwd=work_dir))
+    if include_workspace:
+        workspace_info = build_workspace_info(work_dir, max_depth=max_depth)
+        if workspace_info:
+            sections.append(workspace_info)
+    if include_summary:
+        summary = build_conversation_summary(conversation)
+        if summary:
+            sections.append(summary)
+    return "\n".join(sections).strip()
+
+
+def wrap_user_request(content: str, context_block: str) -> str:
+    """Wrap a pure user request with runtime context tags."""
+    request = extract_user_request(content)
+    if not context_block:
+        return request
+    return f"{context_block}\n<user_request>\n{request}\n</user_request>"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -80,24 +142,14 @@ def inject_user_context(
         ``"latest"`` — inject into the last user message only.
         ``"all"`` — inject into every user message (not recommended).
     """
-    work_dir = getattr(conversation, "work_dir", None) or "."
-
-    sections: List[str] = []
-    if include_environment:
-        sections.append(build_environment_info())
-    if include_workspace:
-        ws = build_workspace_info(work_dir)
-        if ws:
-            sections.append(ws)
-    if include_summary:
-        cs = build_conversation_summary(conversation)
-        if cs:
-            sections.append(cs)
-
-    if not sections:
+    context_block = build_runtime_context_block(
+        conversation,
+        include_environment=include_environment,
+        include_workspace=include_workspace,
+        include_summary=include_summary,
+    )
+    if not context_block:
         return
-
-    context_block = "\n".join(sections)
 
     messages = conversation.messages or []
 
@@ -125,9 +177,8 @@ _MARKER = "<environment_info>"
 
 
 def _already_injected(msg: Message) -> bool:
-    return bool(msg.content and _MARKER in msg.content)
+    return bool(msg.content and (_MARKER in msg.content or "<user_request>" in msg.content))
 
 
 def _prepend_context(msg: Message, block: str) -> None:
-    original = (msg.content or "").strip()
-    msg.content = f"{block}\n<user_request>\n{original}\n</user_request>"
+    msg.content = wrap_user_request(msg.content or "", block)

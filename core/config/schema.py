@@ -64,7 +64,7 @@ class CompressionPolicyConfig:
     assistant_min_chars: int = 800
     max_active_messages: int = 20
     token_threshold_ratio: float = 0.70
-    keep_last_n: int = 10
+    keep_last_n: int = 3
 
     @staticmethod
     def from_dict(data: Mapping[str, Any] | None) -> "CompressionPolicyConfig":
@@ -75,7 +75,7 @@ class CompressionPolicyConfig:
             assistant_min_chars=_clamp_int(_as_int(d.get("assistant_min_chars"), 800), 0, 200000),
             max_active_messages=_clamp_int(_as_int(d.get("max_active_messages"), 20), 5, 500),
             token_threshold_ratio=max(0.10, min(0.95, _as_float(d.get("token_threshold_ratio"), 0.70))),
-            keep_last_n=_clamp_int(_as_int(d.get("keep_last_n"), 10), 1, 200),
+            keep_last_n=_clamp_int(_as_int(d.get("keep_last_n"), 3), 1, 200),
         )
 
     def to_dict(self) -> Dict[str, Any]:

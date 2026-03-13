@@ -11,10 +11,11 @@ additional instructions when the skill is activated.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from core.config import get_global_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,9 @@ class Skill:
     name: str
     content: str
     source: str  # file path
+    description: str = ""
     tags: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class SkillsManager:
@@ -76,8 +79,7 @@ class SkillsManager:
             dirs.append(project_dir)
 
         # Global: ~/.PyChat/skills/
-        home = Path.home()
-        global_dir = home / ".PyChat" / "skills"
+        global_dir = get_global_subdir("skills")
         if global_dir.is_dir():
             dirs.append(global_dir)
 
@@ -91,23 +93,94 @@ class SkillsManager:
     def _load_from_dir(self, directory: Path) -> None:
         try:
             for entry in sorted(directory.iterdir()):
-                if entry.is_file() and entry.suffix.lower() in (".md", ".txt"):
-                    name = entry.stem.lower()
-                    if name in self._skills:
-                        continue
-                    try:
-                        content = entry.read_text(encoding="utf-8")
-                        tags = self._extract_tags(content)
-                        self._skills[name] = Skill(
-                            name=name,
-                            content=content,
-                            source=str(entry),
-                            tags=tags,
-                        )
-                    except Exception as e:
-                        logger.warning("Failed to load skill %s: %s", entry, e)
+                skill = None
+                try:
+                    skill = self._load_skill_entry(entry)
+                except Exception as e:
+                    logger.warning("Failed to load skill %s: %s", entry, e)
+                if not skill:
+                    continue
+                if skill.name in self._skills:
+                    continue
+                self._skills[skill.name] = skill
         except Exception as e:
             logger.warning("Failed to scan skill directory %s: %s", directory, e)
+
+    def _load_skill_entry(self, entry: Path) -> Optional[Skill]:
+        if entry.is_dir():
+            skill_file = entry / "SKILL.md"
+            if not skill_file.is_file():
+                return None
+            return self._load_skill_file(skill_file, default_name=entry.name)
+
+        if entry.is_file() and entry.suffix.lower() in (".md", ".txt"):
+            if entry.name.lower() == "skill.md":
+                return None
+            return self._load_skill_file(entry, default_name=entry.stem)
+        return None
+
+    def _load_skill_file(self, path: Path, *, default_name: str) -> Optional[Skill]:
+        content = path.read_text(encoding="utf-8")
+        metadata, body = self._parse_frontmatter(content)
+        raw_name = str(metadata.get("name") or default_name or "").strip().lower()
+        if not raw_name:
+            return None
+        tags = self._extract_tags(body)
+        frontmatter_tags = metadata.get("tags")
+        if isinstance(frontmatter_tags, list):
+            tags = [str(tag).strip() for tag in frontmatter_tags if str(tag).strip()] or tags
+        return Skill(
+            name=raw_name,
+            content=body.strip() or content.strip(),
+            source=str(path),
+            description=str(metadata.get("description") or "").strip(),
+            tags=tags,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
+        stripped = content.lstrip()
+        if not stripped.startswith("---"):
+            return {}, content
+
+        lines = stripped.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return {}, content
+
+        closing_index = None
+        for index in range(1, len(lines)):
+            if lines[index].strip() == "---":
+                closing_index = index
+                break
+        if closing_index is None:
+            return {}, content
+
+        raw_meta = lines[1:closing_index]
+        body = "\n".join(lines[closing_index + 1:])
+        metadata: Dict[str, Any] = {}
+        for raw_line in raw_meta:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
+                value = value[1:-1]
+            if value.startswith("[") and value.endswith("]"):
+                metadata[key] = [
+                    item.strip().strip("'\"")
+                    for item in value[1:-1].split(",")
+                    if item.strip()
+                ]
+                continue
+            lowered = value.lower()
+            if lowered in {"true", "false"}:
+                metadata[key] = lowered == "true"
+                continue
+            metadata[key] = value
+        return metadata, body
 
     @staticmethod
     def _extract_tags(content: str) -> List[str]:
@@ -138,3 +211,59 @@ def resolve_active_skills(
             resolved.append(skill)
             seen.add(name)
     return resolved
+
+
+def suggest_skills_for_query(
+    query: str,
+    *,
+    work_dir: str = ".",
+    limit: int = 3,
+) -> List[Skill]:
+    text = str(query or "").strip().lower()
+    if not text:
+        return []
+
+    mgr = SkillsManager(work_dir)
+    query_tokens = _tokenize_skill_text(text)
+    expanded_tokens = set(query_tokens)
+    if any(token in expanded_tokens for token in {"playwright", "browser", "web", "website", "page", "google", "search", "截图", "网页", "浏览器", "网站", "表单", "登录"}):
+        expanded_tokens.update({"browser", "web", "website", "page", "automation", "form", "login", "screenshot"})
+
+    ranked: List[Tuple[int, Skill]] = []
+    for skill in mgr.list_skills():
+        haystack = " ".join([
+            skill.name,
+            skill.description,
+            " ".join(skill.tags),
+            str(skill.metadata.get("argument-hint") or ""),
+        ]).strip().lower()
+        if not haystack:
+            continue
+        skill_tokens = _tokenize_skill_text(haystack)
+        overlap = len(expanded_tokens & skill_tokens)
+        if overlap <= 0:
+            continue
+        score = overlap
+        if skill.name in text:
+            score += 10
+        if "browser" in skill_tokens and any(token in expanded_tokens for token in {"browser", "playwright", "web", "website", "page"}):
+            score += 3
+        ranked.append((score, skill))
+
+    ranked.sort(key=lambda item: (-item[0], item[1].name))
+    return [skill for _score, skill in ranked[:max(0, int(limit))]]
+
+
+def _tokenize_skill_text(value: str) -> set[str]:
+    tokens: List[str] = []
+    current: List[str] = []
+    for ch in value:
+        if ch.isalnum() or ch in {"-", "_"}:
+            current.append(ch)
+            continue
+        if current:
+            tokens.append("".join(current))
+            current.clear()
+    if current:
+        tokens.append("".join(current))
+    return {token for token in tokens if len(token) >= 2}

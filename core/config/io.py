@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -9,11 +10,62 @@ from core.config.schema import AppConfig, ProjectConfig
 
 
 _APP_CACHE: AppConfig | None = None
+_GLOBAL_DATA_DIR_CACHE: Path | None = None
+
+
+def _get_legacy_appdata_dir() -> Path:
+    app_data = os.getenv("APPDATA", os.path.expanduser("~"))
+    return Path(app_data) / "PyChat"
+
+
+def _merge_directory(source: Path, target: Path) -> None:
+    if not source.exists() or not source.is_dir():
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for child in source.iterdir():
+        destination = target / child.name
+        try:
+            if child.is_dir():
+                _merge_directory(child, destination)
+            elif not destination.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(child, destination)
+        except Exception:
+            continue
+
+
+def _migrate_legacy_global_data(target_dir: Path) -> None:
+    legacy_dir = _get_legacy_appdata_dir()
+    try:
+        if legacy_dir.resolve() == target_dir.resolve():
+            return
+    except Exception:
+        pass
+
+    if not legacy_dir.exists() or not legacy_dir.is_dir():
+        return
+
+    _merge_directory(legacy_dir, target_dir)
+
+
+def get_global_data_dir() -> Path:
+    global _GLOBAL_DATA_DIR_CACHE
+    if _GLOBAL_DATA_DIR_CACHE is not None:
+        return _GLOBAL_DATA_DIR_CACHE
+
+    target_dir = Path.home() / ".PyChat"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_global_data(target_dir)
+    _GLOBAL_DATA_DIR_CACHE = target_dir
+    return target_dir
+
+
+def get_global_subdir(name: str) -> Path:
+    return get_global_data_dir() / str(name or "").strip()
 
 
 def _get_app_data_dir() -> Path:
-    app_data = os.getenv("APPDATA", os.path.expanduser("~"))
-    return Path(app_data) / "PyChat"
+    return get_global_data_dir()
 
 
 def get_settings_path() -> Path:

@@ -11,6 +11,15 @@ class ToolRegistry:
         """Register a tool instance."""
         self._tools[tool.name] = tool
 
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
+
+    def unregister_prefix(self, prefix: str) -> None:
+        if not prefix:
+            return
+        for name in [tool_name for tool_name in self._tools.keys() if tool_name.startswith(prefix)]:
+            self._tools.pop(name, None)
+
     def get_tool(self, name: str) -> Optional[BaseTool]:
         return self._tools.get(name)
 

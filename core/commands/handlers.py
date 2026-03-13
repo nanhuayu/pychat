@@ -49,18 +49,23 @@ def cmd_clear(args: str, ctx: Dict[str, Any]) -> CommandResult:
 
 def cmd_skill(args: str, ctx: Dict[str, Any]) -> CommandResult:
     from core.skills import SkillsManager
+    from core.config import get_global_subdir
     mgr = SkillsManager(str(ctx.get("work_dir") or "."))
     if not args.strip():
         skills = mgr.list_skills()
         if not skills:
             return CommandResult(
                 action=CommandAction.DISPLAY,
-                display_text="No skills found. Add `.md` files to `~/.PyChat/skills/` or `.pychat/skills/`.",
+                display_text=(
+                    "No skills found. Add a legacy `.md` skill or a directory skill with `SKILL.md` to "
+                    f"`{get_global_subdir('skills')}` or `.pychat/skills/`."
+                ),
             )
         lines = ["**Available skills:**"]
         for s in skills:
             tags = f" [{', '.join(s.tags)}]" if s.tags else ""
-            lines.append(f"  `{s.name}`{tags} — {s.source}")
+            desc = f" — {s.description}" if s.description else ""
+            lines.append(f"  `{s.name}`{tags}{desc} ({s.source})")
         return CommandResult(action=CommandAction.DISPLAY, display_text="\n".join(lines))
     name = args.strip().lower()
     skill = mgr.get(name)

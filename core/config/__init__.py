@@ -19,6 +19,8 @@ from core.config.schema import (
 )
 
 from core.config.io import (
+    get_global_data_dir,
+    get_global_subdir,
     load_app_config,
     save_app_config,
     load_project_config,
@@ -53,6 +55,8 @@ __all__ = [
 
     "load_app_config",
     "save_app_config",
+    "get_global_data_dir",
+    "get_global_subdir",
     "load_project_config",
     "save_project_config",
     "set_cached_app_config",

@@ -223,15 +223,38 @@ def build_system_prompt(
     if combined_custom:
         parts.append(f"## Custom Instructions\n{combined_custom}")
 
-    # Inject active skills
+    # Inject explicitly activated skills plus a small set of relevant auto-matched skills.
     active_skills = (settings.get("active_skills") or [])
-    if active_skills:
-        from core.skills import resolve_active_skills
+    skill_names: list[str] = []
+    for raw_name in active_skills:
+        name = str(raw_name or "").strip().lower()
+        if name and name not in skill_names:
+            skill_names.append(name)
+
+    latest_user_query = ""
+    for msg in reversed(getattr(conversation, "messages", []) or []):
+        if getattr(msg, "role", "") != "user":
+            continue
+        latest_user_query = str(getattr(msg, "content", "") or "").strip()
+        if latest_user_query:
+            break
+
+    from core.skills import resolve_active_skills, suggest_skills_for_query
+    for skill in suggest_skills_for_query(
+        latest_user_query,
+        work_dir=getattr(conversation, "work_dir", ".") or ".",
+        limit=2,
+    ):
+        if skill.name not in skill_names:
+            skill_names.append(skill.name)
+
+    if skill_names:
         for skill in resolve_active_skills(
-            active_skills,
+            skill_names,
             work_dir=getattr(conversation, "work_dir", ".") or ".",
         ):
-            parts.append(f'<skill name="{skill.name}">\n{skill.content}\n</skill>')
+            description = f' description="{skill.description}"' if skill.description else ""
+            parts.append(f'<skill name="{skill.name}"{description}>\n{skill.content}\n</skill>')
 
     # Inject conversation summary at the end of the system prompt
     try:

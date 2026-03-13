@@ -5,6 +5,7 @@ reducing it by ~170 lines.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import json
 from typing import TYPE_CHECKING
@@ -162,6 +163,10 @@ class ConversationPresenter:
 
     def delete(self, conversation_id: str) -> None:
         host = self._host
+        try:
+            asyncio.run(host.mcp_manager.close_conversation_sessions(conversation_id))
+        except Exception as e:
+            logger.debug("Failed to close MCP sessions for deleted conversation: %s", e)
         if host.conv_service.delete(conversation_id):
             conversations = host.conv_service.list_all()
             host.sidebar.update_conversations(conversations)

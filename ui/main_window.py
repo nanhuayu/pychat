@@ -4,6 +4,7 @@ Main application window - Chinese UI with fixed streaming
 
 import logging
 import os
+import asyncio
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QMessageBox, QMenu
@@ -832,3 +833,10 @@ class MainWindow(QMainWindow):
             "</ul>"
             "<p>基于 PyQt6 构建</p>"
         )
+
+    def closeEvent(self, event) -> None:
+        try:
+            asyncio.run(self.mcp_manager.shutdown())
+        except Exception as e:
+            logger.debug("Failed to shutdown MCP sessions on exit: %s", e)
+        super().closeEvent(event)

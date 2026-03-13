@@ -7,6 +7,7 @@ import json
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
+from core.config import get_global_data_dir
 from models.conversation import Conversation
 from models.provider import Provider
 from models.mcp_server import McpServerConfig
@@ -19,9 +20,7 @@ class StorageService:
     
     def __init__(self, data_dir: str = None):
         if data_dir is None:
-            # Default to user's app data directory
-            app_data = os.getenv('APPDATA', os.path.expanduser('~'))
-            data_dir = os.path.join(app_data, 'PyChat')
+            data_dir = str(get_global_data_dir())
         
         self.data_dir = Path(data_dir)
         self.conversations_dir = self.data_dir / 'conversations'

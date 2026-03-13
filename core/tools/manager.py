@@ -1,12 +1,11 @@
-"""
-MCP Service Manager (Refactored)
-Manages connections to MCP servers and acts as a provider for the ToolRegistry.
-"""
+"""MCP service manager with persistent conversation-scoped sessions."""
 
+import logging
 import sys
 import os
 import asyncio
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -44,6 +43,30 @@ from core.tools.system.state_mgr import StateMgrTool
 from core.tools.system.multi_agent import NewTaskTool, AttemptCompletionTool, SwitchModeTool
 from core.tools.system.document_tools import ManageDocumentTool
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _PersistentMcpSession:
+    signature: str
+    stdio_context: Any
+    session_context: Any
+    session: Any
+
+    async def close(self) -> None:
+        session_error: Optional[Exception] = None
+        try:
+            await self.session_context.__aexit__(None, None, None)
+        except Exception as exc:
+            session_error = exc
+        try:
+            await self.stdio_context.__aexit__(None, None, None)
+        except Exception as exc:
+            if session_error is None:
+                session_error = exc
+        if session_error is not None:
+            raise session_error
+
 class McpManager:
     """MCP service manager.
 
@@ -66,6 +89,8 @@ class McpManager:
         
         # Helper for legacy
         self._workspace_root = Path(os.getcwd()).resolve()
+        self._mcp_schema_cache: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
+        self._persistent_sessions: Dict[Tuple[str, str], _PersistentMcpSession] = {}
 
     def _register_default_system_tools(self):
         tools = [
@@ -144,46 +169,41 @@ class McpManager:
         return filtered_schemas
 
     async def _refresh_mcp_tools(self):
-        """Connects to enabled servers and registers their tools."""
+        """Register MCP tool proxies using cached schemas where possible."""
         self.servers = self.storage.load_mcp_servers()
+        self.registry.unregister_prefix("mcp__")
+        active_servers: Dict[str, str] = {}
         
         for config in self.servers:
             if not config.enabled:
                 continue
+            signature = self._config_signature(config)
+            active_servers[config.name] = signature
             
             try:
-                # We need to list tools.
-                # This logic is similar to previous get_all_tools.
-                env = os.environ.copy()
-                env.update(config.env)
-                
-                params = StdioServerParameters(
-                    command=config.command,
-                    args=config.args,
-                    env=env
-                )
-                
-                # Connect and list
-                # Note: This is slow if we do it every time.
-                # We should cache or only do it if not done recently.
-                # For now, keeping it simple as per previous implementation.
-                async with stdio_client(params) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        result = await session.list_tools()
-                        
-                        for tool in result.tools:
-                            # Create Proxy
-                            schema = {
-                                "name": tool.name,
-                                "description": tool.description,
-                                "parameters": tool.inputSchema
-                            }
-                            proxy = McpProxyTool(self, config, tool.name, schema)
-                            self.registry.register(proxy)
-                            
+                cached = self._mcp_schema_cache.get(config.name)
+                if cached and cached[0] == signature:
+                    schemas = cached[1]
+                else:
+                    schemas = await self._list_server_tools(config)
+                    self._mcp_schema_cache[config.name] = (signature, schemas)
+
+                for schema in schemas:
+                    proxy = McpProxyTool(self, config, schema["name"], schema)
+                    self.registry.register(proxy)
             except Exception as e:
-                print(f"Error listing tools from {config.name}: {e}")
+                logger.warning("Error listing tools from %s: %s", config.name, e)
+
+        stale_cache_keys = [name for name in self._mcp_schema_cache.keys() if name not in active_servers]
+        for name in stale_cache_keys:
+            self._mcp_schema_cache.pop(name, None)
+
+        stale_session_keys = [
+            key for key, handle in self._persistent_sessions.items()
+            if key[1] not in active_servers or handle.signature != active_servers.get(key[1])
+        ]
+        for key in stale_session_keys:
+            await self._close_persistent_session(key)
 
     async def execute_tool_with_context(self, tool_name: str, arguments: dict, context) -> str:
         """
@@ -194,7 +214,13 @@ class McpManager:
         result = await self.registry.execute(tool_name, arguments, context)
         return result.to_string()
 
-    async def call_tool(self, tool_name: str, arguments: dict, work_dir: Optional[str] = None) -> Any:
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict,
+        work_dir: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Any:
         """
         Execute an MCP tool (called by McpProxyTool).
         Handles the connection management.
@@ -225,34 +251,129 @@ class McpManager:
         if not config:
             return f"Server {server_name} not found or disabled"
 
-        # Execute
-        try:
-            env = os.environ.copy()
-            env.update(config.env)
-            
-            params = StdioServerParameters(
-                command=config.command,
-                args=config.args,
-                env=env
+        session_key = self._session_key(conversation_id, server_name)
+        for attempt_index in range(2):
+            try:
+                session = await self._get_or_create_persistent_session(
+                    config,
+                    conversation_id=conversation_id,
+                )
+                result = await session.call_tool(real_tool_name, arguments)
+                return self._format_tool_result(result)
+            except Exception as e:
+                logger.warning(
+                    "MCP tool call failed (%s -> %s, attempt %s): %s",
+                    server_name,
+                    real_tool_name,
+                    attempt_index + 1,
+                    e,
+                )
+                await self._close_persistent_session(session_key)
+                if attempt_index >= 1:
+                    return f"MCP Execution Error: {e}"
+
+    async def close_conversation_sessions(self, conversation_id: Optional[str]) -> None:
+        conv_key = (conversation_id or "").strip()
+        if not conv_key:
+            return
+        keys = [key for key in self._persistent_sessions.keys() if key[0] == conv_key]
+        for key in keys:
+            await self._close_persistent_session(key)
+
+    async def shutdown(self) -> None:
+        keys = list(self._persistent_sessions.keys())
+        for key in keys:
+            await self._close_persistent_session(key)
+
+    def _config_signature(self, config: McpServerConfig) -> str:
+        payload = {
+            "name": config.name,
+            "command": config.command,
+            "args": list(config.args or []),
+            "env": dict(config.env or {}),
+            "enabled": bool(config.enabled),
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    def _session_key(self, conversation_id: Optional[str], server_name: str) -> Tuple[str, str]:
+        return ((conversation_id or "__global__").strip() or "__global__", server_name)
+
+    def _build_server_params(self, config: McpServerConfig) -> Any:
+        env = os.environ.copy()
+        env.update(config.env)
+        return StdioServerParameters(
+            command=config.command,
+            args=config.args,
+            env=env,
+        )
+
+    async def _list_server_tools(self, config: McpServerConfig) -> List[Dict[str, Any]]:
+        params = self._build_server_params(config)
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.list_tools()
+
+        schemas: List[Dict[str, Any]] = []
+        for tool in result.tools:
+            schemas.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema,
+                }
             )
-            
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool(real_tool_name, arguments)
-                    
-                    # Result is CallToolResult
-                    # We need to format it to string
-                    text_content = []
-                    for content in result.content:
-                        if content.type == "text":
-                            text_content.append(content.text)
-                        elif content.type == "image":
-                            text_content.append(f"[Image: {content.mimeType}]")
-                        elif content.type == "resource":
-                             text_content.append(f"[Resource: {content.uri}]")
-                             
-                    return "\n".join(text_content)
-                    
-        except Exception as e:
-            return f"MCP Execution Error: {e}"
+        return schemas
+
+    async def _open_persistent_session(self, config: McpServerConfig) -> _PersistentMcpSession:
+        params = self._build_server_params(config)
+        stdio_context = stdio_client(params)
+        read, write = await stdio_context.__aenter__()
+        session_context = ClientSession(read, write)
+        session = await session_context.__aenter__()
+        await session.initialize()
+        return _PersistentMcpSession(
+            signature=self._config_signature(config),
+            stdio_context=stdio_context,
+            session_context=session_context,
+            session=session,
+        )
+
+    async def _get_or_create_persistent_session(
+        self,
+        config: McpServerConfig,
+        *,
+        conversation_id: Optional[str],
+    ) -> Any:
+        key = self._session_key(conversation_id, config.name)
+        signature = self._config_signature(config)
+        handle = self._persistent_sessions.get(key)
+        if handle and handle.signature == signature:
+            return handle.session
+        if handle:
+            await self._close_persistent_session(key)
+        handle = await self._open_persistent_session(config)
+        self._persistent_sessions[key] = handle
+        return handle.session
+
+    async def _close_persistent_session(self, key: Tuple[str, str]) -> None:
+        handle = self._persistent_sessions.pop(key, None)
+        if not handle:
+            return
+        try:
+            await handle.close()
+        except Exception as exc:
+            logger.debug("Failed to close MCP session %s: %s", key, exc)
+
+    @staticmethod
+    def _format_tool_result(result: Any) -> str:
+        text_content: List[str] = []
+        for content in getattr(result, "content", []) or []:
+            content_type = getattr(content, "type", "")
+            if content_type == "text":
+                text_content.append(getattr(content, "text", ""))
+            elif content_type == "image":
+                text_content.append(f"[Image: {getattr(content, 'mimeType', 'unknown')}]")
+            elif content_type == "resource":
+                text_content.append(f"[Resource: {getattr(content, 'uri', '')}]")
+        return "\n".join([item for item in text_content if item])

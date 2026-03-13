@@ -52,7 +52,18 @@ class McpProxyTool(BaseTool):
             # Let's add a direct execution method to McpManager or just use call_tool for simplicity.
             # Using call_tool ensures connection management logic in McpManager is used.
             
-            result = await self.mcp_manager.call_tool(self._name, arguments, work_dir=context.work_dir)
+            conversation_id = None
+            try:
+                if getattr(context, "conversation", None) is not None:
+                    conversation_id = getattr(context.conversation, "id", None)
+            except Exception:
+                conversation_id = None
+            result = await self.mcp_manager.call_tool(
+                self._name,
+                arguments,
+                work_dir=context.work_dir,
+                conversation_id=conversation_id,
+            )
             return ToolResult(str(result))
         except Exception as e:
             return ToolResult(f"MCP Tool Error: {e}", is_error=True)

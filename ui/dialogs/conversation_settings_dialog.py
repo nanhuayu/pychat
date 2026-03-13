@@ -9,12 +9,15 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QPushButton,
     QComboBox,
+    QLabel,
 )
 from typing import List, Optional
 
+from core.config import AppConfig, load_app_config
 from models.conversation import Conversation
 from models.provider import Provider
 from core.modes.manager import ModeManager
+from core.prompts.system_builder import resolve_base_system_prompt_text
 from ui.utils.form_builder import FormSection
 
 
@@ -34,20 +37,30 @@ class ConversationSettingsDialog(QDialog):
         self._conversation = conversation
         self._providers = providers or []
         self._default_show_thinking = bool(default_show_thinking)
+        try:
+            self._app_config = load_app_config()
+        except Exception:
+            self._app_config = AppConfig()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
         s = conversation.settings or {}
+        self._system_prompt_base_text = self._compute_base_system_prompt()
+        self._system_prompt_display_text = (s.get("system_prompt", "") or "").strip() or self._system_prompt_base_text
 
         # ===== 基本信息 =====
         basic = FormSection("基本信息")
         self.title_edit = basic.add_line_edit("名称", text=conversation.title or "", object_name="conv_title")
         self.system_prompt_edit = basic.add_text_edit(
-            "系统提示", text=s.get("system_prompt", "") or "",
-            placeholder="例如：你是一个严谨的助手...（可选）", object_name="conv_system_prompt",
+            "系统提示", text=self._system_prompt_display_text,
+            placeholder="显示当前生效的基础 system prompt，可直接修改", object_name="conv_system_prompt",
         )
+        self.system_prompt_note = QLabel("当前显示的是该模式下生效的基础 system prompt。保持不改时不会额外保存对话级覆盖。")
+        self.system_prompt_note.setWordWrap(True)
+        self.system_prompt_note.setProperty("muted", True)
+        basic.form.addRow("", self.system_prompt_note)
         root.addWidget(basic.group)
 
         # ===== 模型设置 =====
@@ -58,8 +71,9 @@ class ConversationSettingsDialog(QDialog):
 
         self.mode_combo = QComboBox()
         self.mode_combo.setObjectName("conv_mode")
+        self.mode_combo.blockSignals(True)
         try:
-            mm = ModeManager(None)
+            mm = ModeManager(getattr(conversation, "work_dir", "") or None)
             for m in mm.list_modes():
                 self.mode_combo.addItem(m.name, m.slug)
         except Exception:
@@ -72,6 +86,8 @@ class ConversationSettingsDialog(QDialog):
                 self.mode_combo.setCurrentIndex(idx)
         except Exception:
             pass
+        self.mode_combo.blockSignals(False)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         model_sec.form.addRow("模式", self.mode_combo)
 
         for p in self._providers:
@@ -83,36 +99,6 @@ class ConversationSettingsDialog(QDialog):
         if conversation.model:
             self.model_combo.setCurrentText(conversation.model)
         root.addWidget(model_sec.group)
-
-        # ===== 压缩/优化 =====
-        comp = FormSection("压缩/优化")
-        self.summary_model_combo = comp.add_combo(
-            "压缩模型", editable=True,
-            current_text=str(s.get("summary_model", "") or ""),
-            object_name="conv_summary_model",
-        )
-        self.summary_include_tool_details = comp.add_checkbox(
-            "包含工具详情（更耗 token）", row_label="工具信息",
-            checked=bool(s.get("summary_include_tool_details", False)),
-            object_name="conv_summary_include_tool_details",
-        )
-        self.summary_system_prompt_edit = comp.add_text_edit(
-            "压缩System", text=s.get("summary_system_prompt", "") or "",
-            placeholder="可选：用于压缩/总结请求的 system prompt（留空使用内置简洁模板）",
-            max_height=70, object_name="conv_summary_system_prompt",
-        )
-        self.prompt_optimizer_model_combo = comp.add_combo(
-            "优化模型", editable=True,
-            current_text=str(s.get("prompt_optimizer_model", "") or ""),
-            object_name="conv_prompt_optimizer_model",
-        )
-        self.prompt_optimizer_system_prompt_edit = comp.add_text_edit(
-            "优化System", text=s.get("prompt_optimizer_system_prompt", "") or "",
-            placeholder="可选：用于'优化提示词'请求的 system prompt（留空使用内置模板）",
-            max_height=70, object_name="conv_prompt_optimizer_system_prompt",
-        )
-        root.addWidget(comp.group)
-
 
         # ===== 采样参数 =====
         temp_val = s.get("temperature")
@@ -155,8 +141,20 @@ class ConversationSettingsDialog(QDialog):
             self.show_thinking.setChecked(self._default_show_thinking)
         toggle_row.addWidget(self.show_thinking)
 
+        self.enable_mcp = QCheckBox("启用 MCP 工具")
+        self.enable_mcp.setObjectName("conv_enable_mcp")
+        self.enable_mcp.setChecked(bool(s.get("enable_mcp", False)))
+        toggle_row.addWidget(self.enable_mcp)
+
+        self.enable_search = QCheckBox("启用网络搜索")
+        self.enable_search.setObjectName("conv_enable_search")
+        self.enable_search.setChecked(bool(s.get("enable_search", False)))
+        toggle_row.addWidget(self.enable_search)
+
         toggle_row.addStretch()
         root.addLayout(toggle_row)
+
+        self._on_mode_changed(self.mode_combo.currentIndex())
 
         root.addStretch()
 
@@ -200,75 +198,83 @@ class ConversationSettingsDialog(QDialog):
         settings["max_tokens"] = int(self.max_tokens.value())
         settings["stream"] = bool(self.stream_enabled.isChecked())
         settings["show_thinking"] = bool(self.show_thinking.isChecked())
+        settings["enable_mcp"] = bool(self.enable_mcp.isChecked())
+        settings["enable_search"] = bool(self.enable_search.isChecked())
 
-        # Summary/compression settings
-        if hasattr(self, "summary_model_combo"):
-            summary_model = self.summary_model_combo.currentText().strip()
-            if summary_model:
-                settings["summary_model"] = summary_model
-            else:
-                settings.pop("summary_model", None)
-
-        # Prompt optimizer settings
-        if hasattr(self, "prompt_optimizer_model_combo"):
-            opt_model = self.prompt_optimizer_model_combo.currentText().strip()
-            if opt_model:
-                settings["prompt_optimizer_model"] = opt_model
-            else:
-                settings.pop("prompt_optimizer_model", None)
-
-        if hasattr(self, "prompt_optimizer_system_prompt_edit"):
-            opt_sys = (self.prompt_optimizer_system_prompt_edit.toPlainText() or "").strip()
-            if opt_sys:
-                settings["prompt_optimizer_system_prompt"] = opt_sys
-            else:
-                settings.pop("prompt_optimizer_system_prompt", None)
-
-        if hasattr(self, "summary_system_prompt_edit"):
-            summary_sys = (self.summary_system_prompt_edit.toPlainText() or "").strip()
-            if summary_sys:
-                settings["summary_system_prompt"] = summary_sys
-            else:
-                settings.pop("summary_system_prompt", None)
-
-        if hasattr(self, "summary_include_tool_details"):
-            if bool(self.summary_include_tool_details.isChecked()):
-                settings["summary_include_tool_details"] = True
-            else:
-                settings.pop("summary_include_tool_details", None)
+        for key in (
+            "summary_model",
+            "summary_include_tool_details",
+            "summary_system_prompt",
+            "prompt_optimizer_model",
+            "prompt_optimizer_system_prompt",
+        ):
+            settings.pop(key, None)
 
         # Clean empty values
-        if not settings.get("system_prompt"):
+        system_prompt_text = (self.system_prompt_edit.toPlainText() or "").strip()
+        if system_prompt_text and system_prompt_text != self._system_prompt_base_text:
+            settings["system_prompt"] = system_prompt_text
+        else:
             settings.pop("system_prompt", None)
         if settings.get("max_context_messages") == 0:
             settings.pop("max_context_messages", None)
 
         self._conversation.settings = settings
 
+    def _on_mode_changed(self, index: int) -> None:
+        if not hasattr(self, "enable_mcp") or not hasattr(self, "enable_search") or not hasattr(self, "show_thinking"):
+            return
+        slug = str(self.mode_combo.itemData(index) or "chat").strip().lower()
+        settings = self._conversation.settings or {}
+        try:
+            mm = ModeManager(getattr(self._conversation, "work_dir", "") or None)
+            mode = mm.get(slug)
+            groups = set(mode.group_names())
+        except Exception:
+            groups = set()
+
+        previous_base = self._system_prompt_base_text
+        self._system_prompt_base_text = self._compute_base_system_prompt(slug)
+        current_text = (self.system_prompt_edit.toPlainText() or "").strip()
+        if not current_text or current_text == previous_base:
+            self.system_prompt_edit.blockSignals(True)
+            try:
+                self.system_prompt_edit.setPlainText(self._system_prompt_base_text)
+            finally:
+                self.system_prompt_edit.blockSignals(False)
+
+        allow_mcp = bool({"mcp", "command", "edit"} & groups)
+        allow_search = bool("search" in groups)
+        default_mcp = allow_mcp
+        default_search = allow_search
+        default_thinking = bool({"command", "edit"} & groups)
+
+        self.enable_mcp.setEnabled(allow_mcp)
+        self.enable_search.setEnabled(allow_search)
+
+        if not allow_mcp:
+            self.enable_mcp.setChecked(False)
+        elif "enable_mcp" not in settings:
+            self.enable_mcp.setChecked(default_mcp)
+
+        if not allow_search:
+            self.enable_search.setChecked(False)
+        elif "enable_search" not in settings:
+            self.enable_search.setChecked(default_search)
+
+        if "show_thinking" not in settings:
+            self.show_thinking.setChecked(default_thinking if slug != "chat" else self._default_show_thinking)
+
     def _on_provider_changed(self, index: int):
         """Populate model combo when provider changes."""
         current_model = self.model_combo.currentText().strip()
-        current_summary_model = (
-            self.summary_model_combo.currentText().strip() if hasattr(self, "summary_model_combo") else ""
-        )
-        current_opt_model = (
-            self.prompt_optimizer_model_combo.currentText().strip() if hasattr(self, "prompt_optimizer_model_combo") else ""
-        )
 
         self.model_combo.clear()
-        if hasattr(self, "summary_model_combo"):
-            self.summary_model_combo.clear()
-        if hasattr(self, "prompt_optimizer_model_combo"):
-            self.prompt_optimizer_model_combo.clear()
 
         if 0 <= index < len(self._providers):
             provider = self._providers[index]
             for model in provider.models:
                 self.model_combo.addItem(model)
-                if hasattr(self, "summary_model_combo"):
-                    self.summary_model_combo.addItem(model)
-                if hasattr(self, "prompt_optimizer_model_combo"):
-                    self.prompt_optimizer_model_combo.addItem(model)
 
             if current_model:
                 self.model_combo.setCurrentText(current_model)
@@ -279,14 +285,13 @@ class ConversationSettingsDialog(QDialog):
                 else:
                     self.model_combo.setCurrentText(provider.default_model)
 
-            if hasattr(self, "summary_model_combo"):
-                if current_summary_model:
-                    self.summary_model_combo.setCurrentText(current_summary_model)
-                elif provider.default_model:
-                    self.summary_model_combo.setCurrentText(provider.default_model)
-
-            if hasattr(self, "prompt_optimizer_model_combo"):
-                if current_opt_model:
-                    self.prompt_optimizer_model_combo.setCurrentText(current_opt_model)
-                elif provider.default_model:
-                    self.prompt_optimizer_model_combo.setCurrentText(provider.default_model)
+    def _compute_base_system_prompt(self, mode_slug: Optional[str] = None) -> str:
+        conv = Conversation.from_dict(self._conversation.to_dict())
+        if mode_slug:
+            conv.mode = str(mode_slug or "chat") or "chat"
+        return resolve_base_system_prompt_text(
+            conversation=conv,
+            app_config=self._app_config,
+            default_work_dir=getattr(conv, "work_dir", ".") or ".",
+            include_conversation_override=False,
+        )

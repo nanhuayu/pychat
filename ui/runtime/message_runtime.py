@@ -134,6 +134,11 @@ class MessageRuntime(QObject):
                     self._raw_complete.emit(conversation_id, request_id, result.final_message)
 
                 loop.run_until_complete(run())
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                try:
+                    loop.run_until_complete(loop.shutdown_default_executor())
+                except Exception:
+                    pass
                 loop.close()
 
             except Exception as e:

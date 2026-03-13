@@ -143,7 +143,11 @@ class SettingsDialog(QDialog):
         # Modes are global user config; ModesPage ignores work_dir.
         self.modes_page = ModesPage(self.work_dir)
         self.context_page = ContextPage(self._app_config.context)
-        self.prompts_page = PromptsPage(self._app_config.prompts, self._app_config.prompt_optimizer)
+        self.prompts_page = PromptsPage(
+            self._app_config.prompts,
+            self._app_config.prompt_optimizer,
+            prompt_optimizer_model=str(getattr(self._app_config, "prompt_optimizer_model", "") or ""),
+        )
         self.agent_page = AgentPermissionsPage(self._app_config.permissions, retry=self._app_config.retry)
         self.mcp_page = McpPage()
         self.search_page = SearchPage(self.search_config)
@@ -153,7 +157,10 @@ class SettingsDialog(QDialog):
             show_thinking=self._app_config.show_thinking,
             log_stream=self._app_config.log_stream,
         )
-        self.general_page = GeneralPage(proxy_url=self._app_config.proxy_url)
+        self.general_page = GeneralPage(
+            proxy_url=self._app_config.proxy_url,
+            llm_timeout_seconds=float(getattr(self._app_config, "llm_timeout_seconds", 600.0) or 600.0),
+        )
         self.skills_page = SkillsPage(work_dir=self.work_dir)
 
         self._pages = [
@@ -241,6 +248,7 @@ class SettingsDialog(QDialog):
             self._prompt_patch = {
                 "prompts": prompts.to_dict(),
                 "prompt_optimizer": opt.to_dict(),
+                "prompt_optimizer_model": self.prompts_page.collect_prompt_optimizer_model(),
             }
         except Exception:
             self._prompt_patch = {}
@@ -264,6 +272,12 @@ class SettingsDialog(QDialog):
 
     def get_proxy_url(self) -> str:
         return str(self._general_patch.get("proxy_url", self._app_config.proxy_url) or "")
+
+    def get_llm_timeout_seconds(self) -> float:
+        try:
+            return float(self._general_patch.get("llm_timeout_seconds", self._app_config.llm_timeout_seconds))
+        except Exception:
+            return float(getattr(self._app_config, "llm_timeout_seconds", 600.0) or 600.0)
 
     def get_auto_approve_settings(self) -> dict:
         return dict(self._auto_approve_patch or {})

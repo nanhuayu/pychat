@@ -251,6 +251,7 @@ class ProviderDialog(QDialog):
         try:
             loop = asyncio.new_event_loop()
             models = loop.run_until_complete(fetch())
+            loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()
             
             if models:
@@ -292,6 +293,7 @@ class ProviderDialog(QDialog):
         try:
             loop = asyncio.new_event_loop()
             success, message = loop.run_until_complete(test())
+            loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()
             
             if success:

@@ -93,6 +93,9 @@ class CompressionPolicyConfig:
 class ContextConfig:
     default_max_context_messages: int = 0
     agent_auto_compress_enabled: bool = True
+    summary_model: str = ""
+    summary_system_prompt: str = ""
+    summary_include_tool_details: bool = False
     compression_policy: CompressionPolicyConfig = field(default_factory=CompressionPolicyConfig)
 
     @staticmethod
@@ -103,6 +106,9 @@ class ContextConfig:
         return ContextConfig(
             default_max_context_messages=default_max,
             agent_auto_compress_enabled=_as_bool(d.get("agent_auto_compress_enabled"), True),
+            summary_model=_as_str(d.get("summary_model"), "").strip(),
+            summary_system_prompt=_as_str(d.get("summary_system_prompt"), "").strip(),
+            summary_include_tool_details=_as_bool(d.get("summary_include_tool_details"), False),
             compression_policy=CompressionPolicyConfig.from_dict(_as_dict(d.get("compression_policy"))),
         )
 
@@ -110,6 +116,9 @@ class ContextConfig:
         return {
             "default_max_context_messages": int(self.default_max_context_messages),
             "agent_auto_compress_enabled": bool(self.agent_auto_compress_enabled),
+            "summary_model": (self.summary_model or "").strip(),
+            "summary_system_prompt": (self.summary_system_prompt or "").strip(),
+            "summary_include_tool_details": bool(self.summary_include_tool_details),
             "compression_policy": self.compression_policy.to_dict(),
         }
 
@@ -232,6 +241,7 @@ class AppConfig:
     show_thinking: bool = True
     log_stream: bool = False
     proxy_url: str = ""
+    llm_timeout_seconds: float = 600.0
     splitter_sizes: List[int] = field(default_factory=list)
     chat_splitter_sizes: List[int] = field(default_factory=list)
 
@@ -241,6 +251,7 @@ class AppConfig:
     context: ContextConfig = field(default_factory=ContextConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     prompt_optimizer: PromptOptimizerConfig = field(default_factory=PromptOptimizerConfig)
+    prompt_optimizer_model: str = ""
 
     @staticmethod
     def from_dict(data: Mapping[str, Any] | None) -> "AppConfig":
@@ -269,6 +280,7 @@ class AppConfig:
             show_thinking=_as_bool(d.get("show_thinking"), True),
             log_stream=_as_bool(d.get("log_stream"), False),
             proxy_url=_as_str(d.get("proxy_url"), "").strip(),
+            llm_timeout_seconds=max(30.0, min(3600.0, _as_float(d.get("llm_timeout_seconds"), 600.0))),
             splitter_sizes=_sizes(d.get("splitter_sizes")),
             chat_splitter_sizes=_sizes(d.get("chat_splitter_sizes")),
             permissions=PermissionsConfig.from_dict(permissions_src),
@@ -276,6 +288,7 @@ class AppConfig:
             context=ContextConfig.from_dict(_as_dict(d.get("context"))),
             prompts=PromptsConfig.from_dict(_as_dict(d.get("prompts"))),
             prompt_optimizer=PromptOptimizerConfig.from_dict(_as_dict(d.get("prompt_optimizer"))),
+            prompt_optimizer_model=_as_str(d.get("prompt_optimizer_model"), "").strip(),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -285,11 +298,15 @@ class AppConfig:
             "show_thinking": bool(self.show_thinking),
             "log_stream": bool(self.log_stream),
             "proxy_url": self.proxy_url or "",
+            "llm_timeout_seconds": float(self.llm_timeout_seconds),
             "splitter_sizes": [int(x) for x in (self.splitter_sizes or [])],
             "chat_splitter_sizes": [int(x) for x in (self.chat_splitter_sizes or [])],
+            "retry": self.retry.to_dict(),
+            "permissions": self.permissions.to_dict(),
             "context": self.context.to_dict(),
             "prompts": self.prompts.to_dict(),
             "prompt_optimizer": self.prompt_optimizer.to_dict(),
+            "prompt_optimizer_model": (self.prompt_optimizer_model or "").strip(),
         }
         # Keep legacy flat permission keys for current UI consumers.
         data.update(self.permissions.to_dict())

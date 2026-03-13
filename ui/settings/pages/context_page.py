@@ -27,12 +27,29 @@ class ContextPage(QWidget):
             "默认上下文消息数", value=int(context.default_max_context_messages or 0),
             range=(0, 200), tooltip="默认值；0 表示不限制（由模型/服务商上下文上限决定）",
         )
+        tip = QLabel("说明：一般保持 0 即可，让模型上下文窗口自行决定上限。")
+        tip.setWordWrap(True)
+        tip.setProperty("muted", True)
+        layout.addWidget(tip)
         layout.addWidget(ctx.group)
 
         pol = context.compression_policy
         agent = FormSection("自动压缩")
         self.agent_auto_compress_enabled = agent.add_checkbox(
             "启用自动压缩", checked=bool(context.agent_auto_compress_enabled),
+        )
+        self.summary_model = agent.add_line_edit(
+            "压缩模型", text=(context.summary_model or ""),
+            placeholder="留空时跟随当前对话模型",
+        )
+        self.summary_include_tool_details = agent.add_checkbox(
+            "压缩时包含工具详情", checked=bool(context.summary_include_tool_details),
+        )
+        self.summary_system_prompt = agent.add_text_edit(
+            "压缩 System",
+            text=(context.summary_system_prompt or ""),
+            placeholder="留空时使用内置压缩模板",
+            max_height=90,
         )
         self.comp_max_active_messages = agent.add_spin(
             "活跃消息上限", value=int(pol.max_active_messages or 20), range=(5, 200),
@@ -60,5 +77,8 @@ class ContextPage(QWidget):
         return ContextConfig(
             default_max_context_messages=default_max,
             agent_auto_compress_enabled=bool(self.agent_auto_compress_enabled.isChecked()),
+            summary_model=(self.summary_model.text() or "").strip(),
+            summary_system_prompt=(self.summary_system_prompt.toPlainText() or "").strip(),
+            summary_include_tool_details=bool(self.summary_include_tool_details.isChecked()),
             compression_policy=pol,
         )

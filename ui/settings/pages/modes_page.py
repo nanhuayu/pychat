@@ -48,7 +48,7 @@ def _mode_to_json(mode: ModeConfig) -> Dict[str, Any]:
         else:
             groups.append(str(g))
 
-    return {
+    payload = {
         "slug": mode.slug,
         "name": mode.name,
         "roleDefinition": (mode.role_definition or ""),
@@ -57,6 +57,17 @@ def _mode_to_json(mode: ModeConfig) -> Dict[str, Any]:
         "customInstructions": mode.custom_instructions or "",
         "groups": groups,
     }
+    if getattr(mode, "tool_allowlist", None):
+        payload["toolAllowlist"] = list(mode.tool_allowlist or [])
+    if getattr(mode, "tool_denylist", None):
+        payload["toolDenylist"] = list(mode.tool_denylist or [])
+    if getattr(mode, "max_turns", None):
+        payload["maxTurns"] = int(mode.max_turns)
+    if getattr(mode, "context_window_limit", None):
+        payload["contextWindowLimit"] = int(mode.context_window_limit)
+    if getattr(mode, "auto_compress_enabled", None) is not None:
+        payload["autoCompressEnabled"] = bool(mode.auto_compress_enabled)
+    return payload
 
 
 def _normalize_modes_payload(obj: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -245,14 +256,15 @@ class ModesPage(QWidget):
             pass
 
     def reload_from_disk(self) -> None:
-        data = load_user_modes_dict()
-        modes, err = _normalize_modes_payload(data) if data else (None, None)
-        if modes is None:
-            # If no user file yet, start from effective modes (built-in defaults).
+        try:
             mm = ModeManager(None)
             modes = [_mode_to_json(m) for m in mm.list_modes()]
+        except Exception:
+            data = load_user_modes_dict()
+            modes, _err = _normalize_modes_payload(data) if data else (None, None)
+            modes = list(modes or [])
 
-        self._modes = list(modes)
+        self._modes = list(modes or [])
         self._rebuild_combo()
         self._sync_json_from_visual()
 

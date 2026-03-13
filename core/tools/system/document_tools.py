@@ -33,7 +33,7 @@ class ManageDocumentTool(BaseTool):
 
     @property
     def group(self) -> str:
-        return "edit"
+        return "modes"
 
     @property
     def category(self) -> str:

@@ -33,6 +33,10 @@ _TRANSIENT_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
     r"timeout", r"timed?\s*out", r"5\d{2}", r"connection.?(?:reset|refused|abort)",
     r"server.?error", r"internal.?server", r"bad.?gateway", r"service.?unavailable",
     r"ECONNRESET", r"ENOTFOUND",
+    r"remote.?protocol.?error",
+    r"server disconnected without sending (?:a )?response",
+    r"connection.*closed", r"connection.*dropped", r"stream.*closed",
+    r"unexpected.?eof", r"temporar(?:y|ily).*(?:disconnect|unavailable)",
 ]]
 
 

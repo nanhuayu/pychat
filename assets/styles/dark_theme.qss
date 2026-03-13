@@ -344,6 +344,8 @@ QToolButton#add_task_btn {
     background-color: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.12);
     color: #e0e0e0;
+    border-radius: 6px;
+    padding: 0px;
 }
 
 QToolButton#task_done_btn:hover,

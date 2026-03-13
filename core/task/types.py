@@ -83,6 +83,7 @@ class TurnOutcome:
     context: TurnContext
     final_message: Optional[Message] = None
     error: Optional[str] = None
+    next_policy: Optional["RunPolicy"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,7 @@ class RunPolicy:
 
     # If set, only these tools are callable.
     tool_allowlist: Optional[Set[str]] = None
+    tool_denylist: Optional[Set[str]] = None
 
     # Retry policy for transient LLM errors.
     retry: RetryPolicy = field(default_factory=RetryPolicy)

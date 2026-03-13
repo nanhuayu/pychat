@@ -27,7 +27,7 @@ def cmd_mode(args: str, ctx: Dict[str, Any]) -> CommandResult:
         current = ctx.get("current_mode", "chat")
         return CommandResult(
             action=CommandAction.DISPLAY,
-            display_text=f"Current mode: **{current}**. Usage: `/mode <slug>` or `#mode <slug>` (e.g. `#mode code`)",
+            display_text=f"Current mode: **{current}**. Usage: `/mode <slug>`, `#mode <slug>`, or `@mode:<slug>` (e.g. `@mode:code`).",
         )
     return CommandResult(action=CommandAction.MODE_SWITCH, data=args.strip())
 

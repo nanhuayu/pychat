@@ -338,6 +338,8 @@ QToolButton#add_task_btn {
     background-color: rgba(0, 0, 0, 0.04);
     border: 1px solid rgba(0, 0, 0, 0.10);
     color: #1f1f1f;
+    border-radius: 6px;
+    padding: 0px;
 }
 
 QToolButton#task_done_btn:hover,
@@ -621,7 +623,6 @@ QScrollArea#stats_scroll {
 
 QScrollArea#stats_scroll QWidget {
      background-color: transparent;
-}
 }
 
 /* ============ Settings Dialog ============ */

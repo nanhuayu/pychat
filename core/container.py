@@ -20,6 +20,7 @@ from services.provider_service import ProviderService
 from services.conversation_service import ConversationService
 from services.context_service import ContextService
 from services.skill_service import SkillService
+from core.config import load_app_config
 from core.llm.client import LLMClient
 from core.tools.manager import McpManager
 from core.commands import CommandRegistry
@@ -36,10 +37,14 @@ class AppContainer:
     def __init__(self) -> None:
         # -- Data & persistence
         self.storage = StorageService()
+        self.app_config = load_app_config()
 
         # -- Core components (shared single instances)
         self.mcp_manager = McpManager()
-        self.client = LLMClient(mcp_manager=self.mcp_manager)
+        self.client = LLMClient(
+            timeout=float(getattr(self.app_config, "llm_timeout_seconds", 600.0) or 600.0),
+            mcp_manager=self.mcp_manager,
+        )
 
         # -- Service layer
         self.provider_service = ProviderService()

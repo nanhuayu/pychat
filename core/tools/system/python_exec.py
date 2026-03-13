@@ -45,7 +45,7 @@ class PythonExecTool(BaseTool):
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "Python code to execute"},
-                "timeoutSec": {"type": "number", "description": "Timeout seconds (default: 10)"},
+                "timeoutSec": {"type": "number", "description": "Timeout seconds (default: 60)"},
                 "cwd": {"type": "string", "description": "Workspace-relative working directory (default: '.')"},
             },
             "required": ["code"],
@@ -54,7 +54,7 @@ class PythonExecTool(BaseTool):
 
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         code = arguments.get("code", "")
-        timeout_sec = float(arguments.get("timeoutSec", 30) or 30)
+        timeout_sec = float(arguments.get("timeoutSec", 60) or 60)
         cwd_str = arguments.get("cwd", ".")
         
         if not code or not code.strip():

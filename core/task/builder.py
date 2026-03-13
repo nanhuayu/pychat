@@ -31,9 +31,11 @@ def build_run_policy(
 
     mode_cfg = resolve_mode_config(slug, mode_manager=mode_manager)
 
-    max_turns = 20
-    context_window_limit = 100_000
-    auto_compress_enabled = None
+    max_turns = int(getattr(mode_cfg, "max_turns", None) or 20)
+    context_window_limit = int(getattr(mode_cfg, "context_window_limit", None) or 100_000)
+    auto_compress_enabled = getattr(mode_cfg, "auto_compress_enabled", None)
+    tool_allowlist = set(getattr(mode_cfg, "tool_allowlist", ()) or ()) or None
+    tool_denylist = set(getattr(mode_cfg, "tool_denylist", ()) or ()) or None
 
     # Derive defaults from mode feature policy when caller passes None.
     try:
@@ -83,7 +85,8 @@ def build_run_policy(
         enable_thinking=bool(enable_thinking),
         enable_search=bool(enable_search),
         enable_mcp=bool(enable_mcp),
-        tool_allowlist=None,
+        tool_allowlist=tool_allowlist,
+        tool_denylist=tool_denylist,
         retry=retry,
         auto_compress_enabled=auto_compress_enabled,
     )

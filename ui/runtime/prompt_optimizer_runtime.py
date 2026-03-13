@@ -105,7 +105,11 @@ class PromptOptimizer(QObject):
                 self.optimize_error.emit(conversation_id, request_id, str(e))
             finally:
                 try:
-                    loop.stop()
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception:
+                    pass
+                try:
+                    loop.run_until_complete(loop.shutdown_default_executor())
                 except Exception:
                     pass
                 try:

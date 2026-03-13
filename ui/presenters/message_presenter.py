@@ -19,6 +19,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _format_error_message(error: str) -> str:
+    text = (error or "").strip()
+    if not text:
+        return "模型调用失败：未知错误"
+    if text == "已取消生成":
+        return text
+    if text.startswith("Error sending message:"):
+        detail = text.split(":", 1)[1].strip() if ":" in text else ""
+        return f"模型调用失败：{detail or '未知错误'}"
+    return f"错误: {text}"
+
+
 class MessagePresenter:
     """Handles message sending, streaming, and response lifecycle."""
 
@@ -209,6 +221,7 @@ class MessagePresenter:
             return
 
         target_conv.add_message(message)
+        self._apply_runtime_message_updates(target_conv, message)
         host.conv_service.save(target_conv)
 
         if host.current_conversation and host.current_conversation.id == conversation_id:
@@ -256,6 +269,7 @@ class MessagePresenter:
         message_already_exists = any(m.id == response.id for m in target.messages)
         if not message_already_exists:
             target.add_message(response)
+        self._apply_runtime_message_updates(target, response)
         host.conv_service.save(target)
 
         try:
@@ -279,9 +293,7 @@ class MessagePresenter:
         host = self._host
         host._sync_input_enabled()
 
-        content = f"错误: {error}"
-        if error == "已取消生成":
-            content = "已取消生成"
+        content = _format_error_message(error)
 
         error_message = Message(role="assistant", content=content)
 
@@ -297,6 +309,7 @@ class MessagePresenter:
 
         if host.current_conversation and host.current_conversation.id == conversation_id:
             host.chat_view.finish_streaming_response(error_message)
+            self._update_header(conversation_id)
 
         host._sync_input_enabled()
 
@@ -380,3 +393,32 @@ class MessagePresenter:
             model=host.current_conversation.model or "",
             msg_count=len(host.current_conversation.messages),
         )
+
+    def _apply_runtime_message_updates(self, conversation, message: Message) -> None:
+        host = self._host
+        try:
+            metadata = getattr(message, "metadata", {}) or {}
+            next_mode = str(metadata.get("mode_switch") or "").strip().lower()
+        except Exception:
+            next_mode = ""
+
+        if not next_mode:
+            return
+
+        try:
+            conversation.mode = next_mode
+        except Exception:
+            return
+
+        if host.current_conversation and host.current_conversation.id == getattr(conversation, "id", ""):
+            try:
+                idx = host.input_area.mode_combo.findData(next_mode)
+                if idx >= 0:
+                    host.input_area.mode_combo.blockSignals(True)
+                    try:
+                        host.input_area.mode_combo.setCurrentIndex(idx)
+                    finally:
+                        host.input_area.mode_combo.blockSignals(False)
+                    host.input_area.apply_mode_policy(apply_defaults=True)
+            except Exception as e:
+                logger.debug("Failed to sync runtime mode switch to input area: %s", e)

@@ -21,6 +21,7 @@ from typing import Any, List, Optional
 from models.conversation import Conversation, Message
 from models.provider import Provider
 from models.state import SessionState
+from core.config import load_app_config
 from core.llm.token_utils import estimate_conversation_tokens
 from core.prompts.history import count_user_turn_blocks, is_control_message
 from core.prompts.templates import SUMMARY_SYSTEM_PROMPT
@@ -137,8 +138,17 @@ class ContextCondenser:
 
         logger.info("Condensing %d messages…", len(messages_to_summarize))
 
+        try:
+            app_cfg = load_app_config()
+            context_cfg = getattr(app_cfg, "context", None)
+        except Exception:
+            context_cfg = None
+
         include_tool_details = bool(
-            (conversation.settings or {}).get("summary_include_tool_details", False)
+            (conversation.settings or {}).get(
+                "summary_include_tool_details",
+                bool(getattr(context_cfg, "summary_include_tool_details", False)),
+            )
         )
         transcript = self._build_transcript(
             messages_to_summarize, include_tool_details=include_tool_details
@@ -147,11 +157,13 @@ class ContextCondenser:
         prompt = f"## Previous Summary\n{state.summary}\n\n## New Conversation Delta\n{transcript}\n"
         summary_model = (
             (conversation.settings or {}).get("summary_model")
+            or (getattr(context_cfg, "summary_model", "") or "").strip()
             or conversation.model
             or provider.default_model
         )
         summary_system = (
             (conversation.settings or {}).get("summary_system_prompt")
+            or (getattr(context_cfg, "summary_system_prompt", "") or "").strip()
             or SUMMARY_SYSTEM_PROMPT
         )
 

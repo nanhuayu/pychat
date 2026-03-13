@@ -37,6 +37,10 @@ Call this tool whenever:
 """
 
     @property
+    def group(self) -> str:
+        return "modes"
+
+    @property
     def category(self) -> str:
         return "misc"
 

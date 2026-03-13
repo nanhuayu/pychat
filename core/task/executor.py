@@ -20,6 +20,7 @@ from core.llm.client import LLMClient
 from core.context.condenser import CondensePolicy, ContextCondenser
 from core.context.manager import ContextManager
 from core.config import AppConfig, load_app_config
+from core.modes.manager import resolve_mode_config
 from core.task.types import RunPolicy, TaskEventKind
 from core.task.retry import classify_error, retry_with_backoff
 
@@ -194,6 +195,7 @@ class LLMExecutor:
         policy: RunPolicy,
     ) -> list[dict]:
         prepared_query = ""
+        allowed_groups = None
         try:
             for msg in reversed(getattr(conversation, "messages", []) or []):
                 if getattr(msg, "role", "") != "user":
@@ -206,10 +208,21 @@ class LLMExecutor:
             prepared_query = ""
 
         try:
+            mode_cfg = resolve_mode_config(
+                str(getattr(policy, "mode", "chat") or "chat"),
+                work_dir=str(getattr(conversation, "work_dir", ".") or "."),
+            )
+            allowed_groups = mode_cfg.group_names()
+        except Exception as e:
+            logger.debug("Failed to resolve mode groups for tool loading: %s", e)
+            allowed_groups = None
+
+        try:
             return await self._client.mcp_manager.get_all_tools(
                 include_search=bool(policy.enable_search),
                 include_mcp=bool(policy.enable_mcp),
                 prepared_queries=[prepared_query] if prepared_query else None,
+                allowed_groups=allowed_groups,
             )
         except Exception as e:
             logger.warning("Failed to load request tools: %s", e)

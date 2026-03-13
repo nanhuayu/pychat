@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+from datetime import datetime
 from dataclasses import replace
 from typing import List
 
@@ -40,12 +41,18 @@ def build_environment_info(*, cwd: str | None = None) -> str:
     """OS / shell / date — always available."""
     os_name = platform.system()
     os_release = platform.release()
+    os_version = platform.version()
+    machine = platform.machine() or "unknown"
     shell = os.environ.get("SHELL") or os.environ.get("COMSPEC") or "unknown"
     cwd = os.path.abspath(cwd or os.getcwd())
+    now = datetime.now().astimezone()
     lines = [
         f"<environment_info>",
         f"OS: {os_name} {os_release}",
+        f"OS Version: {os_version}",
+        f"Machine: {machine}",
         f"Shell: {shell}",
+        f"Current Time: {now.isoformat(timespec='seconds')}",
         f"CWD: {cwd}",
         f"</environment_info>",
     ]

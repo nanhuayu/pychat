@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QGroupBox, QFormLayout, QLineEdit, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QGroupBox, QFormLayout, QLineEdit, QLabel, QDoubleSpinBox
 
 
 class GeneralPage(QWidget):
     page_emoji = "⚙️"
     page_title = "常规设置"
 
-    def __init__(self, *, proxy_url: str = "", parent=None):
+    def __init__(self, *, proxy_url: str = "", llm_timeout_seconds: float = 600.0, parent=None):
         super().__init__(parent)
-        self._setup_ui(proxy_url)
+        self._setup_ui(proxy_url, llm_timeout_seconds)
 
-    def _setup_ui(self, proxy_url: str) -> None:
+    def _setup_ui(self, proxy_url: str, llm_timeout_seconds: float) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -22,15 +22,24 @@ class GeneralPage(QWidget):
         self.proxy_edit.setText(proxy_url or "")
         self.proxy_edit.setPlaceholderText("http://127.0.0.1:7890")
         net_layout.addRow("代理服务器:", self.proxy_edit)
+
+        self.timeout_spin = QDoubleSpinBox()
+        self.timeout_spin.setRange(30.0, 3600.0)
+        self.timeout_spin.setDecimals(0)
+        self.timeout_spin.setSingleStep(30.0)
+        self.timeout_spin.setValue(float(llm_timeout_seconds or 600.0))
+        self.timeout_spin.setToolTip("模型请求的总超时。流式响应、首包等待和长输出都受此值影响。")
+        net_layout.addRow("模型超时(秒):", self.timeout_spin)
         layout.addWidget(net_group)
 
-        about_group = QGroupBox("关于")
-        about_layout = QVBoxLayout(about_group)
-        about_layout.addWidget(QLabel("PyChat v0.5.0"))
-        about_layout.addWidget(QLabel("基于 PyQt6 + MCP 构建"))
-        layout.addWidget(about_group)
+        hint = QLabel("代理仅在你需要通过本地代理访问模型服务时使用；留空表示直连。模型超时建议按服务端稳定性设置，默认 600 秒。")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         layout.addStretch()
 
     def collect(self) -> dict:
-        return {"proxy_url": (self.proxy_edit.text() or "").strip()}
+        return {
+            "proxy_url": (self.proxy_edit.text() or "").strip(),
+            "llm_timeout_seconds": float(self.timeout_spin.value()),
+        }

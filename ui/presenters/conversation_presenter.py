@@ -77,6 +77,16 @@ class ConversationPresenter:
             except Exception as e:
                 logger.debug("Failed to sync mode selection during select: %s", e)
 
+            try:
+                conv_settings = conversation.settings or {}
+                default_search, default_mcp = host.input_area.get_mode_default_tool_flags()
+                host.input_area.set_tool_toggles(
+                    enable_mcp=bool(conv_settings.get("enable_mcp", default_mcp)),
+                    enable_search=bool(conv_settings.get("enable_search", default_search)),
+                )
+            except Exception as e:
+                logger.debug("Failed to sync MCP/Search toggles during select: %s", e)
+
             # Update chat header
             host.chat_view.update_header(
                 provider_name=provider_name,
@@ -108,12 +118,26 @@ class ConversationPresenter:
     def new(self) -> None:
         host = self._host
         host.current_conversation = Conversation()
+        try:
+            host.current_conversation.provider_id = host.input_area.get_selected_provider_id()
+            host.current_conversation.model = host.input_area.get_selected_model()
+            host.current_conversation.mode = host.input_area.get_selected_mode_slug()
+            host.current_conversation.settings = dict(host.current_conversation.settings or {})
+            host.current_conversation.settings["show_thinking"] = bool(host.input_area.thinking_toggle.isChecked())
+            host.current_conversation.settings["enable_mcp"] = bool(host.input_area.is_mcp_enabled())
+            host.current_conversation.settings["enable_search"] = bool(host.input_area.is_search_enabled())
+        except Exception as e:
+            logger.debug("Failed to seed new conversation selection: %s", e)
         host.chat_view.clear()
         host.stats_panel.update_stats(None)
-        host.chat_view.update_header(provider_name="", model="", msg_count=0)
+        host._sync_chat_header_from_input()
         host.chat_view.update_work_dir("")
         host.input_area.set_work_dir("")
         host.input_area.set_conversation(host.current_conversation)
+        try:
+            host.conv_service.save(host.current_conversation)
+        except Exception as e:
+            logger.debug("Failed to save new conversation shell: %s", e)
         host._sync_input_enabled()
 
     # ------------------------------------------------------------------
@@ -146,6 +170,11 @@ class ConversationPresenter:
                 host.current_conversation = None
                 host.chat_view.clear()
                 host.stats_panel.update_stats(None)
+                host._sync_chat_header_from_input()
+                host.chat_view.update_work_dir("")
+                host.input_area.set_work_dir("")
+                host.input_area.set_conversation(None)
+                host._sync_input_enabled()
 
     # ------------------------------------------------------------------
     # Duplicate

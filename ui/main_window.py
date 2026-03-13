@@ -6,7 +6,7 @@ import logging
 import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QSplitter, QMessageBox
+    QSplitter, QMessageBox, QMenu
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
@@ -123,8 +123,11 @@ class MainWindow(QMainWindow):
         self.input_area.conversation_settings_requested.connect(self._open_conversation_settings)
         self.input_area.provider_settings_requested.connect(self._open_provider_settings)
         self.input_area.show_thinking_changed.connect(self._on_conversation_show_thinking_changed)
+        self.input_area.mcp_toggled.connect(self._on_conversation_mcp_changed)
+        self.input_area.search_toggled.connect(self._on_conversation_search_changed)
         self.input_area.prompt_optimize_requested.connect(self._on_prompt_optimize_requested)
         self.input_area.provider_model_changed.connect(self._on_input_provider_model_changed)
+        self.input_area.mode_changed.connect(self._on_conversation_mode_changed)
         self.input_area.slash_command_result.connect(self._on_slash_command_result)
 
         # Vertical splitter: message area <-> input area (user-resizable)
@@ -181,8 +184,10 @@ class MainWindow(QMainWindow):
     
     def _create_menu_bar(self):
         menubar = self.menuBar()
+        menubar.clear()
         
         file_menu = menubar.addMenu("文件")
+        conversation_menu = menubar.addMenu("会话")
         
         new_action = QAction("新建会话", self)
         new_action.setShortcut("Ctrl+N")
@@ -193,6 +198,16 @@ class MainWindow(QMainWindow):
         import_action.setShortcut("Ctrl+I")
         import_action.triggered.connect(lambda: self.sidebar._import_conversation())
         file_menu.addAction(import_action)
+
+        export_menu = QMenu("导出当前会话", self)
+        self.export_markdown_action = QAction("导出为 Markdown...", self)
+        self.export_markdown_action.triggered.connect(lambda: self._export_conversation("markdown"))
+        export_menu.addAction(self.export_markdown_action)
+
+        self.export_json_action = QAction("导出为 JSON...", self)
+        self.export_json_action.triggered.connect(lambda: self._export_conversation("json"))
+        export_menu.addAction(self.export_json_action)
+        file_menu.addMenu(export_menu)
         
         file_menu.addSeparator()
         
@@ -208,12 +223,34 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
+        self.duplicate_conversation_action = QAction("复制当前会话", self)
+        self.duplicate_conversation_action.triggered.connect(self._duplicate_current_conversation)
+        conversation_menu.addAction(self.duplicate_conversation_action)
+
+        self.delete_conversation_action = QAction("删除当前会话", self)
+        self.delete_conversation_action.triggered.connect(self._delete_current_conversation)
+        conversation_menu.addAction(self.delete_conversation_action)
+
+        conversation_menu.addSeparator()
+
+        self.conversation_settings_action = QAction("会话设置...", self)
+        self.conversation_settings_action.triggered.connect(self._open_conversation_settings)
+        conversation_menu.addAction(self.conversation_settings_action)
+
+        self.provider_settings_action = QAction("服务商设置...", self)
+        self.provider_settings_action.triggered.connect(self._open_provider_settings)
+        conversation_menu.addAction(self.provider_settings_action)
+
+        self.compact_action = QAction("压缩上下文", self)
+        self.compact_action.triggered.connect(self._trigger_compact)
+        conversation_menu.addAction(self.compact_action)
+
         edit_menu = menubar.addMenu("编辑")
         
-        cancel_action = QAction("取消生成", self)
-        cancel_action.setShortcut("Escape")
-        cancel_action.triggered.connect(self._cancel_generation)
-        edit_menu.addAction(cancel_action)
+        self.cancel_action = QAction("取消生成", self)
+        self.cancel_action.setShortcut("Escape")
+        self.cancel_action.triggered.connect(self._cancel_generation)
+        edit_menu.addAction(self.cancel_action)
         
         view_menu = menubar.addMenu("视图")
         
@@ -228,11 +265,17 @@ class MainWindow(QMainWindow):
         about_action = QAction("关于 PyChat", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+        self._refresh_menu_action_states()
     
     def _load_data(self):
         self._app_settings = self.storage.load_settings() or {}
         self.mcp_manager.update_permissions(self._app_settings)
         self._apply_proxy()
+        try:
+            self.client.set_timeout(float(self._app_settings.get("llm_timeout_seconds", 600.0) or 600.0))
+        except Exception as e:
+            logger.debug("Failed to sync LLM timeout from settings: %s", e)
 
         self.providers = self.storage.load_providers()
         if not self.providers:
@@ -240,6 +283,11 @@ class MainWindow(QMainWindow):
             self.storage.save_providers(self.providers)
         
         self.input_area.set_providers(self.providers)
+        try:
+            self.input_area.apply_mode_policy(apply_defaults=True)
+        except Exception as e:
+            logger.debug("Failed to apply initial mode defaults: %s", e)
+        self._sync_chat_header_from_input()
         
         conversations = self.conv_service.list_all()
         self.sidebar.update_conversations(conversations)
@@ -285,9 +333,11 @@ class MainWindow(QMainWindow):
         try:
             if not self.current_conversation:
                 self.input_area.set_streaming_state(False)
+                self._refresh_menu_action_states()
                 return
             is_streaming = self.message_runtime.is_streaming(self.current_conversation.id)
             self.input_area.set_streaming_state(is_streaming)
+            self._refresh_menu_action_states()
         except Exception as e:
             logger.debug("Failed to sync input enabled state: %s", e)
     
@@ -343,28 +393,7 @@ class MainWindow(QMainWindow):
     def _on_input_provider_model_changed(self, provider_id: str, model: str) -> None:
         if bool(getattr(self, '_syncing_input_selection', False)):
             return
-        provider_name = ''
-        try:
-            for p in getattr(self, 'providers', []) or []:
-                if getattr(p, 'id', '') == provider_id:
-                    provider_name = getattr(p, 'name', '') or ''
-                    break
-        except Exception as e:
-            logger.debug("Failed to get provider name: %s", e)
-            provider_name = ''
-
-        msg_count = 0
-        if self.current_conversation:
-            try:
-                msg_count = len(self.current_conversation.messages)
-            except Exception as e:
-                logger.debug("Failed to get message count: %s", e)
-                msg_count = 0
-
-        try:
-            self.chat_view.update_header(provider_name=provider_name, model=(model or ''), msg_count=msg_count)
-        except Exception as e:
-            logger.debug("Failed to update chat header: %s", e)
+        self._sync_chat_header_from_input(provider_id=provider_id, model=model)
 
         if not self.current_conversation:
             return
@@ -384,10 +413,11 @@ class MainWindow(QMainWindow):
             logger.debug("Failed to update stats panel: %s", e)
 
         try:
-            if getattr(self.current_conversation, 'messages', None):
-                self.conv_service.save(self.current_conversation)
+            self.conv_service.save(self.current_conversation)
         except Exception as e:
             logger.warning("Failed to save conversation: %s", e)
+
+        self._refresh_menu_action_states()
 
     def _on_work_dir_changed(self, path: str):
         """Handle workspace directory change"""
@@ -461,7 +491,11 @@ class MainWindow(QMainWindow):
 
         # Allow per-conversation override
         settings = dict(self.current_conversation.settings or {})
-        opt_model = (settings.get('prompt_optimizer_model') or '').strip() or base_model
+        opt_model = (
+            (settings.get('prompt_optimizer_model') or '').strip()
+            or (self._app_settings.get('prompt_optimizer_model') or '').strip()
+            or base_model
+        )
         opt_sys = (settings.get('prompt_optimizer_system_prompt') or '').strip() or None
 
         if not opt_sys:
@@ -534,6 +568,15 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.debug("Failed to sync mode selection in conv settings: %s", e)
             self.input_area.set_show_thinking(bool((self.current_conversation.settings or {}).get('show_thinking', True)))
+            try:
+                settings = self.current_conversation.settings or {}
+                default_search, default_mcp = self.input_area.get_mode_default_tool_flags()
+                self.input_area.set_tool_toggles(
+                    enable_mcp=bool(settings.get('enable_mcp', default_mcp)),
+                    enable_search=bool(settings.get('enable_search', default_search)),
+                )
+            except Exception as e:
+                logger.debug("Failed to sync MCP/Search from conversation settings dialog: %s", e)
 
             conversations = self.conv_service.list_all()
             self.sidebar.update_conversations(conversations)
@@ -545,6 +588,33 @@ class MainWindow(QMainWindow):
         if self.current_conversation.settings is None:
             self.current_conversation.settings = {}
         self.current_conversation.settings['show_thinking'] = bool(enabled)
+        self.conv_service.save(self.current_conversation)
+
+    def _on_conversation_mcp_changed(self, enabled: bool) -> None:
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+        if self.current_conversation.settings is None:
+            self.current_conversation.settings = {}
+        self.current_conversation.settings['enable_mcp'] = bool(enabled)
+        self.conv_service.save(self.current_conversation)
+
+    def _on_conversation_search_changed(self, enabled: bool) -> None:
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+        if self.current_conversation.settings is None:
+            self.current_conversation.settings = {}
+        self.current_conversation.settings['enable_search'] = bool(enabled)
+        self.conv_service.save(self.current_conversation)
+
+    def _on_conversation_mode_changed(self, mode_slug: str) -> None:
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+        self.current_conversation.mode = str(mode_slug or 'chat') or 'chat'
+        if self.current_conversation.settings is None:
+            self.current_conversation.settings = {}
+        self.current_conversation.settings['show_thinking'] = bool(self.input_area.thinking_toggle.isChecked())
+        self.current_conversation.settings['enable_mcp'] = bool(self.input_area.is_mcp_enabled())
+        self.current_conversation.settings['enable_search'] = bool(self.input_area.is_search_enabled())
         self.conv_service.save(self.current_conversation)
     
     def _on_response_step(self, conversation_id: str, request_id: str, message: Message):
@@ -580,6 +650,61 @@ class MainWindow(QMainWindow):
         if not self.current_conversation:
             return
         self.message_runtime.cancel(self.current_conversation.id)
+
+    def _duplicate_current_conversation(self) -> None:
+        if not self.current_conversation:
+            return
+        self._duplicate_conversation(self.current_conversation.id)
+
+    def _delete_current_conversation(self) -> None:
+        if not self.current_conversation:
+            return
+        self._delete_conversation(self.current_conversation.id)
+
+    def _sync_chat_header_from_input(self, provider_id: str | None = None, model: str | None = None) -> None:
+        selected_provider_id = provider_id if provider_id is not None else self.input_area.get_selected_provider_id()
+        selected_model = model if model is not None else self.input_area.get_selected_model()
+        provider_name = ''
+        try:
+            for provider in getattr(self, 'providers', []) or []:
+                if getattr(provider, 'id', '') == selected_provider_id:
+                    provider_name = getattr(provider, 'name', '') or ''
+                    break
+        except Exception as e:
+            logger.debug("Failed to resolve provider name for header sync: %s", e)
+
+        msg_count = 0
+        try:
+            if self.current_conversation:
+                msg_count = len(getattr(self.current_conversation, 'messages', []) or [])
+        except Exception as e:
+            logger.debug("Failed to get message count for header sync: %s", e)
+
+        try:
+            self.chat_view.update_header(provider_name=provider_name, model=(selected_model or ''), msg_count=msg_count)
+        except Exception as e:
+            logger.debug("Failed to sync chat header from input: %s", e)
+
+        self._refresh_menu_action_states()
+
+    def _refresh_menu_action_states(self) -> None:
+        has_conversation = bool(self.current_conversation)
+        has_messages = bool(has_conversation and getattr(self.current_conversation, 'messages', None))
+        is_streaming = bool(has_conversation and self.message_runtime.is_streaming(self.current_conversation.id))
+
+        for action_name, enabled in (
+            ('export_markdown_action', has_conversation),
+            ('export_json_action', has_conversation),
+            ('duplicate_conversation_action', has_conversation),
+            ('delete_conversation_action', has_conversation),
+            ('conversation_settings_action', has_conversation),
+            ('provider_settings_action', True),
+            ('compact_action', has_messages),
+            ('cancel_action', is_streaming),
+        ):
+            action = getattr(self, action_name, None)
+            if action is not None:
+                action.setEnabled(bool(enabled))
 
     def _export_conversation(self, fmt: str = "markdown"):
         self._conv_presenter.export_current(fmt)
@@ -644,6 +769,7 @@ class MainWindow(QMainWindow):
             self._app_settings['show_thinking'] = dialog.get_show_thinking()
             self._app_settings['log_stream'] = dialog.get_log_stream()
             self._app_settings['proxy_url'] = dialog.get_proxy_url()
+            self._app_settings['llm_timeout_seconds'] = dialog.get_llm_timeout_seconds()
             self._app_settings.update(dialog.get_auto_approve_settings())
 
             # Retry config
@@ -665,6 +791,10 @@ class MainWindow(QMainWindow):
                 logger.debug("Failed to get prompt settings: %s", e)
 
             self._apply_proxy()
+            try:
+                self.client.set_timeout(float(self._app_settings.get('llm_timeout_seconds', 600.0) or 600.0))
+            except Exception as e:
+                logger.debug("Failed to apply updated LLM timeout: %s", e)
             
             # Apply updated permissions to McpManager immediately
             self.mcp_manager.update_permissions(self._app_settings)

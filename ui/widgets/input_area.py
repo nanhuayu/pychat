@@ -4,6 +4,7 @@ Input area widget - Compact responsive layout
 
 import logging
 import os
+import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QTextEdit, QLabel, QFileDialog, QComboBox,
@@ -33,6 +34,8 @@ from ui.widgets.input.text_editor import FileCompleterPopup, MessageTextEdit
 
 logger = logging.getLogger(__name__)
 
+_MODE_MENTION_RE = re.compile(r"^@mode:(?P<slug>[a-zA-Z0-9_-]+)(?:\s+(?P<rest>[\s\S]*))?$")
+
 
 class InputArea(QWidget):
     """Input area - single-row compact toolbar + input"""
@@ -48,6 +51,7 @@ class InputArea(QWidget):
     prompt_optimize_requested = pyqtSignal(str)  # Optimize current input prompt
     
     provider_model_changed = pyqtSignal(str, str)  # provider_id, model
+    mode_changed = pyqtSignal(str)
 
     def __init__(
         self,
@@ -97,7 +101,7 @@ class InputArea(QWidget):
         try:
             self.mode_combo.blockSignals(True)
             self.mode_combo.clear()
-            self._mode_manager = ModeManager(None)
+            self._mode_manager = ModeManager(work_dir or None)
             for m in self._mode_manager.list_modes():
                 self.mode_combo.addItem(m.name, m.slug)
             if cur_slug:
@@ -131,7 +135,7 @@ class InputArea(QWidget):
         # Text input
         self.text_input = MessageTextEdit()
         self.text_input.setObjectName("message_input")
-        self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，#file，@tool，@mode)")
+        self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，#file，@tool，@mode:code)")
         self.text_input.setMinimumHeight(40)
         self.text_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.text_input.configure_command_registry(self._command_registry, self._build_command_context)
@@ -158,7 +162,7 @@ class InputArea(QWidget):
         self.prompt_optimize_btn = self.toolbar.prompt_optimize_btn
         self.send_btn = self.toolbar.send_btn
 
-        self._mode_manager = ModeManager()
+        self._mode_manager = ModeManager(self._work_dir or None)
         for m in self._mode_manager.list_modes():
             self.mode_combo.addItem(m.name, m.slug)
 
@@ -180,6 +184,7 @@ class InputArea(QWidget):
     def _on_mode_changed(self, index: int) -> None:
         try:
             self._apply_mode_policy(apply_defaults=True)
+            self.mode_changed.emit(self.get_selected_mode_slug())
         except Exception as e:
             logger.debug("Failed to apply mode policy on change: %s", e)
 
@@ -359,6 +364,30 @@ class InputArea(QWidget):
             logger.debug("Failed to get effective tool flags from mode policy: %s", e)
             return bool(self._search_enabled), bool(self._mcp_enabled)
 
+    def get_mode_default_tool_flags(self) -> tuple[bool, bool]:
+        """Return (enable_search, enable_mcp) defaults derived from the current mode."""
+        try:
+            slug = self.get_selected_mode_slug()
+            mode = self._mode_manager.get(slug)
+            policy = get_mode_feature_policy(mode)
+            return bool(policy.default_search), bool(policy.default_mcp)
+        except Exception as e:
+            logger.debug("Failed to get mode default tool flags: %s", e)
+            return False, False
+
+    def set_tool_toggles(self, *, enable_mcp: Optional[bool] = None, enable_search: Optional[bool] = None) -> None:
+        """Synchronize MCP/Search toggles without re-emitting external signals."""
+        self._suppress_tool_signals = True
+        try:
+            if enable_mcp is not None:
+                self.mcp_toggle.setChecked(bool(enable_mcp))
+                self._mcp_enabled = bool(enable_mcp)
+            if enable_search is not None:
+                self.search_toggle.setChecked(bool(enable_search))
+                self._search_enabled = bool(enable_search)
+        finally:
+            self._suppress_tool_signals = False
+
     def build_run_policy(self, *, enable_thinking: Optional[bool] = None, retry_config=None) -> RunPolicy:
         """Build RunPolicy based on selected mode + current toggles.
 
@@ -474,6 +503,43 @@ class InputArea(QWidget):
         self.slash_command_result.emit(result)
         return True
 
+    def _apply_mode_mention(self, content: str) -> str:
+        """Apply standalone @mode mentions before normal send/command handling.
+
+        Examples:
+        - @mode:debug
+        - @mode:code fix the failing test
+        """
+        raw = (content or "").strip()
+        if not raw:
+            return raw
+
+        match = _MODE_MENTION_RE.match(raw)
+        if not match:
+            return raw
+
+        slug = (match.group("slug") or "").strip().lower()
+        if not slug:
+            return raw
+
+        idx = self.mode_combo.findData(slug)
+        if idx < 0:
+            return raw
+
+        self.mode_combo.setCurrentIndex(idx)
+        rest = (match.group("rest") or "").strip()
+        if not rest:
+            from core.commands.types import CommandAction, CommandResult
+
+            self.text_input.clear()
+            self.slash_command_result.emit(
+                CommandResult(
+                    action=CommandAction.DISPLAY,
+                    display_text=f"已切换到模式 **{slug}**。",
+                )
+            )
+        return rest
+
     def _emit_message_payload(self, content: str) -> None:
         from core.attachments import process_attachments
 
@@ -489,6 +555,7 @@ class InputArea(QWidget):
 
     def _send_message(self):
         content = self.text_input.toPlainText().strip()
+        content = self._apply_mode_mention(content)
 
         if self._try_handle_command(content):
             return

@@ -3,6 +3,15 @@ from __future__ import annotations
 from core.modes.types import ModeConfig
 
 
+_WORKFLOW_REQUIRED_GROUPS = {
+    "agent": {"modes"},
+    "code": {"modes"},
+    "debug": {"modes"},
+    "architect": {"modes"},
+    "orchestrator": {"modes"},
+}
+
+
 _AGENT_AUTONOMY_SUFFIX = (
     "\n\n"
     "## Execution Guidelines\n"
@@ -11,7 +20,19 @@ _AGENT_AUTONOMY_SUFFIX = (
     "- After modifying files, immediately run tests or check for errors to verify your changes.\n"
     "- If you encounter an error, analyze it and try a different approach instead of giving up.\n"
     "- When the task is fully complete, call `attempt_completion` to present your result.\n"
-    "- Track progress with `manage_state` at key milestones."
+    "- Track progress with `manage_state` at key milestones.\n"
+    "- Maintain a short working plan with `manage_document(name=\"plan\")` for multi-step work.\n"
+    "- Store durable facts and confirmed decisions in memory instead of repeating them in chat.\n"
+    "- If another mode is a better fit, call `switch_mode` or delegate via `new_task` instead of staying stuck in the wrong mode."
+)
+
+_PLANNING_AUTONOMY_SUFFIX = (
+    "\n\n"
+    "## Workflow Requirements\n"
+    "- Keep a concise plan in `manage_document(name=\"plan\")`.\n"
+    "- Keep todo state current with `manage_state`.\n"
+    "- If another mode is better suited, call `switch_mode`; if work should proceed independently, use `new_task`.\n"
+    "- When the planning or orchestration task is complete, call `attempt_completion` with a concise result."
 )
 
 DEFAULT_MODES: list[ModeConfig] = [
@@ -42,10 +63,11 @@ DEFAULT_MODES: list[ModeConfig] = [
         role_definition=(
             "You are an experienced technical leader who is inquisitive and an excellent planner. "
             "Your goal is to gather context and propose a detailed plan before implementation."
+            + _PLANNING_AUTONOMY_SUFFIX
         ),
         when_to_use="需要先设计/拆解/做技术方案与里程碑。",
         description="先规划再实现",
-        groups=("read", "mcp", "search"),
+        groups=("read", "mcp", "search", "modes"),
         custom_instructions="先做信息收集，提出清晰可执行的 todo 列表；必要时提出澄清问题。",
         source="builtin",
     ),
@@ -89,10 +111,11 @@ DEFAULT_MODES: list[ModeConfig] = [
         role_definition=(
             "You are a strategic workflow orchestrator who coordinates complex tasks "
             "by delegating them into sub-tasks using the new_task tool."
+            + _PLANNING_AUTONOMY_SUFFIX
         ),
         when_to_use="需要拆解复杂任务并委派给不同子 Agent。",
         description="多 Agent 协同编排",
-        groups=("modes",),
+        groups=("read", "search", "modes"),
         custom_instructions=(
             "Break complex tasks into sub-tasks using the new_task tool. "
             "Each sub-task should specify a mode and a clear instruction."
@@ -104,3 +127,7 @@ DEFAULT_MODES: list[ModeConfig] = [
 
 def get_default_modes() -> list[ModeConfig]:
     return list(DEFAULT_MODES)
+
+
+def get_builtin_mode_required_groups(slug: str) -> set[str]:
+    return set(_WORKFLOW_REQUIRED_GROUPS.get((slug or "").strip().lower(), set()))

@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 
 _DANGEROUS_PATTERNS = [
@@ -25,6 +29,7 @@ _DANGEROUS_PATTERNS = [
 ]
 _MAX_OUTPUT_LINES = 2000
 _MAX_OUTPUT_BYTES = 50 * 1024
+_DEFAULT_LOG_TAIL_BYTES = 12 * 1024
 
 
 def decode_subprocess_output(data: object) -> str:
@@ -65,7 +70,7 @@ def is_dangerous_command(command: str) -> bool:
 class CommandExecutionRequest:
     command: str
     cwd: Path
-    timeout_sec: int = 120
+    timeout_sec: int = 600
     background: bool = False
 
 
@@ -75,11 +80,17 @@ class CommandExecutionResult:
     stdout: str = ""
     stderr: str = ""
     pid: int | None = None
+    process_id: str | None = None
     timed_out: bool = False
+    running: bool = False
 
     def to_display_text(self, cwd: Path) -> str:
-        if self.pid is not None:
-            return f"Command started in background (PID {self.pid})"
+        if self.process_id is not None:
+            return (
+                f"Command started in background in '{cwd}'. "
+                f"process_id={self.process_id}, pid={self.pid}. "
+                "Use shell_status, shell_logs, shell_wait, or shell_kill to manage it."
+            )
 
         if self.timed_out:
             return (
@@ -95,19 +106,170 @@ class CommandExecutionResult:
         return "\n\n".join(parts)
 
 
+@dataclass(frozen=True)
+class BackgroundProcessSnapshot:
+    process_id: str
+    pid: int
+    command: str
+    cwd: Path
+    log_path: Path
+    running: bool
+    exit_code: int | None
+    started_at: float
+    ended_at: float | None = None
+
+    def to_display_text(self) -> str:
+        status = "running" if self.running else f"exited({self.exit_code})"
+        return (
+            f"process_id={self.process_id}\n"
+            f"pid={self.pid}\n"
+            f"status={status}\n"
+            f"cwd={self.cwd}\n"
+            f"command={self.command}\n"
+            f"log={self.log_path}"
+        )
+
+
+@dataclass
+class _BackgroundProcessRecord:
+    process_id: str
+    command: str
+    cwd: Path
+    log_path: Path
+    started_at: float
+    process: subprocess.Popen
+    log_handle: BinaryIO | None = None
+    exit_code: int | None = None
+    ended_at: float | None = None
+
+
+class BackgroundProcessManager:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._records: dict[str, _BackgroundProcessRecord] = {}
+
+    def start(self, request: CommandExecutionRequest) -> BackgroundProcessSnapshot:
+        log_dir = request.cwd / ".pychat" / "process_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        process_id = uuid.uuid4().hex[:12]
+        log_path = log_dir / f"{process_id}.log"
+        log_handle = log_path.open("ab")
+
+        proc = subprocess.Popen(
+            request.command,
+            shell=True,
+            cwd=str(request.cwd),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
+
+        record = _BackgroundProcessRecord(
+            process_id=process_id,
+            command=request.command,
+            cwd=request.cwd,
+            log_path=log_path,
+            started_at=time.time(),
+            process=proc,
+            log_handle=log_handle,
+        )
+        with self._lock:
+            self._records[process_id] = record
+        return self._snapshot(record)
+
+    def status(self, process_id: str) -> BackgroundProcessSnapshot:
+        record = self._get_record(process_id)
+        self._refresh(record)
+        return self._snapshot(record)
+
+    def read_logs(self, process_id: str, tail_bytes: int = _DEFAULT_LOG_TAIL_BYTES) -> str:
+        record = self._get_record(process_id)
+        self._refresh(record)
+        if not record.log_path.exists():
+            return ""
+
+        raw = record.log_path.read_bytes()
+        if tail_bytes > 0 and len(raw) > tail_bytes:
+            raw = raw[-tail_bytes:]
+        return truncate_process_output(decode_subprocess_output(raw).strip())
+
+    def wait(self, process_id: str, timeout_sec: int | None = None) -> BackgroundProcessSnapshot:
+        record = self._get_record(process_id)
+        try:
+            record.process.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"Process {process_id} did not finish within {timeout_sec}s"
+            ) from exc
+        self._refresh(record)
+        return self._snapshot(record)
+
+    def kill(self, process_id: str) -> BackgroundProcessSnapshot:
+        record = self._get_record(process_id)
+        self._refresh(record)
+        if record.exit_code is None:
+            record.process.terminate()
+            try:
+                record.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                record.process.kill()
+                record.process.wait(timeout=5)
+        self._refresh(record)
+        return self._snapshot(record)
+
+    def _get_record(self, process_id: str) -> _BackgroundProcessRecord:
+        with self._lock:
+            record = self._records.get((process_id or "").strip())
+        if not record:
+            raise KeyError(f"Unknown process_id: {process_id}")
+        return record
+
+    def _refresh(self, record: _BackgroundProcessRecord) -> None:
+        if record.exit_code is not None:
+            return
+        exit_code = record.process.poll()
+        if exit_code is None:
+            return
+        record.exit_code = exit_code
+        record.ended_at = time.time()
+        if record.log_handle is not None:
+            try:
+                record.log_handle.flush()
+                record.log_handle.close()
+            except Exception:
+                pass
+            record.log_handle = None
+
+    def _snapshot(self, record: _BackgroundProcessRecord) -> BackgroundProcessSnapshot:
+        self._refresh(record)
+        return BackgroundProcessSnapshot(
+            process_id=record.process_id,
+            pid=int(record.process.pid or 0),
+            command=record.command,
+            cwd=record.cwd,
+            log_path=record.log_path,
+            running=record.exit_code is None,
+            exit_code=record.exit_code,
+            started_at=record.started_at,
+            ended_at=record.ended_at,
+        )
+
+
+_BACKGROUND_MANAGER = BackgroundProcessManager()
+
+
 class CommandExecutor:
     """Thin wrapper around subprocess for consistent command execution behavior."""
 
     def execute(self, request: CommandExecutionRequest) -> CommandExecutionResult:
         if request.background:
-            proc = subprocess.Popen(
-                request.command,
-                shell=True,
-                cwd=str(request.cwd),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            snapshot = _BACKGROUND_MANAGER.start(request)
+            return CommandExecutionResult(
+                exit_code=None,
+                pid=snapshot.pid,
+                process_id=snapshot.process_id,
+                running=True,
             )
-            return CommandExecutionResult(exit_code=None, pid=proc.pid)
 
         try:
             proc = subprocess.run(
@@ -125,3 +287,15 @@ class CommandExecutor:
             )
         except subprocess.TimeoutExpired:
             return CommandExecutionResult(exit_code=None, timed_out=True)
+
+    def status(self, process_id: str) -> BackgroundProcessSnapshot:
+        return _BACKGROUND_MANAGER.status(process_id)
+
+    def read_logs(self, process_id: str, tail_bytes: int = _DEFAULT_LOG_TAIL_BYTES) -> str:
+        return _BACKGROUND_MANAGER.read_logs(process_id, tail_bytes=tail_bytes)
+
+    def wait(self, process_id: str, timeout_sec: int | None = None) -> BackgroundProcessSnapshot:
+        return _BACKGROUND_MANAGER.wait(process_id, timeout_sec=timeout_sec)
+
+    def kill(self, process_id: str) -> BackgroundProcessSnapshot:
+        return _BACKGROUND_MANAGER.kill(process_id)

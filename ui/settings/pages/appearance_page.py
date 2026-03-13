@@ -17,6 +17,7 @@ class AppearancePage(QWidget):
 
     def __init__(self, *, theme: str = "dark", show_stats: bool = True, show_thinking: bool = True, log_stream: bool = False, parent=None):
         super().__init__(parent)
+        self._log_stream = bool(log_stream)
         self._setup_ui(theme, show_stats, show_thinking, log_stream)
 
     def _setup_ui(self, theme: str, show_stats: bool, show_thinking: bool, log_stream: bool) -> None:
@@ -44,10 +45,6 @@ class AppearancePage(QWidget):
         self.thinking_check.setChecked(bool(show_thinking))
         display_layout.addWidget(self.thinking_check)
 
-        self.log_check = QCheckBox("记录流式日志 (Debug)")
-        self.log_check.setChecked(bool(log_stream))
-        display_layout.addWidget(self.log_check)
-
         layout.addWidget(display_group)
         layout.addStretch()
 
@@ -56,5 +53,5 @@ class AppearancePage(QWidget):
             "theme": "light" if self.theme_combo.currentIndex() == 1 else "dark",
             "show_stats": bool(self.stats_check.isChecked()),
             "show_thinking": bool(self.thinking_check.isChecked()),
-            "log_stream": bool(self.log_check.isChecked()),
+            "log_stream": bool(self._log_stream),
         }

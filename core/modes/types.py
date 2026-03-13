@@ -37,6 +37,11 @@ class ModeConfig:
     description: Optional[str] = None
     custom_instructions: Optional[str] = None
     groups: Sequence[GroupEntry] = field(default_factory=tuple)
+    tool_allowlist: Sequence[str] = field(default_factory=tuple)
+    tool_denylist: Sequence[str] = field(default_factory=tuple)
+    max_turns: Optional[int] = None
+    context_window_limit: Optional[int] = None
+    auto_compress_enabled: Optional[bool] = None
     source: Optional[ModeSource] = None
 
     def group_names(self) -> set[str]:

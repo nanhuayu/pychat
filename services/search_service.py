@@ -95,7 +95,7 @@ class SearchService:
             "include_raw_content": False,
         }
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -137,7 +137,7 @@ class SearchService:
             "engine": "google",
         }
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -178,7 +178,7 @@ class SearchService:
             "categories": "general",
         }
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()

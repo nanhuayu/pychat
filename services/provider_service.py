@@ -11,7 +11,7 @@ class ProviderService:
     """Handles LLM provider operations"""
     
     def __init__(self):
-        self.timeout = 30.0
+        self.timeout = 60.0
     
     async def fetch_models(self, provider: Provider) -> List[str]:
         """Fetch available models from a provider"""

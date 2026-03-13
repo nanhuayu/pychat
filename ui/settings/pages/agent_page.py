@@ -23,20 +23,28 @@ class AgentPermissionsPage(QWidget):
 
         layout.addWidget(QLabel("<h2>Agent 与 权限设置</h2>"))
 
+        hint = QLabel(
+            "这里控制的是自动授权与重试，不决定工具是否会暴露给模型。"
+            "工具可见性仍由模式、MCP 开关和搜索开关决定。"
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("muted", True)
+        layout.addWidget(hint)
+
         perm_group = QGroupBox("自动授权设置")
         perm_layout = QVBoxLayout(perm_group)
 
-        self.auto_read_check = QCheckBox("自动允许读取文件 (read_file, ls, grep)")
+        self.auto_read_check = QCheckBox("自动允许读取类工具 (list_files, read_file, search_files 等)")
         self.auto_read_check.setToolTip("启用后，读取文件的操作将不再询问确认")
         self.auto_read_check.setChecked(bool(permissions.auto_approve_read))
         perm_layout.addWidget(self.auto_read_check)
 
-        self.auto_edit_check = QCheckBox("自动允许编辑文件 (write, edit, delete)")
+        self.auto_edit_check = QCheckBox("自动允许编辑类工具 (write/edit/delete/patch)")
         self.auto_edit_check.setToolTip("启用后，修改文件的操作将不再询问确认 (请谨慎开启)")
         self.auto_edit_check.setChecked(bool(permissions.auto_approve_edit))
         perm_layout.addWidget(self.auto_edit_check)
 
-        self.auto_cmd_check = QCheckBox("自动允许执行命令 (shell_exec)")
+        self.auto_cmd_check = QCheckBox("自动允许命令类工具 (execute_command/shell_*)")
         self.auto_cmd_check.setToolTip("启用后，执行 Shell 命令将不再询问确认 (极度危险!)")
         self.auto_cmd_check.setChecked(bool(permissions.auto_approve_command))
         perm_layout.addWidget(self.auto_cmd_check)

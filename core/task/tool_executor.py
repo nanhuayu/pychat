@@ -64,9 +64,22 @@ class ToolExecutor:
             allowlist = policy.tool_allowlist
             if allowlist is not None and tool_name not in allowlist:
                 return False
+            denylist = policy.tool_denylist
+            if denylist is not None and tool_name in denylist:
+                return False
+            tool = self._mcp_manager.registry.get_tool(tool_name)
             if tool_name == "builtin_web_search":
                 return bool(policy.enable_search)
-            return bool(policy.enable_mcp)
+            if tool is None:
+                return False
+
+            group = str(getattr(tool, "group", "") or "")
+            if group == "search":
+                return bool(policy.enable_search)
+            if group == "mcp":
+                return bool(policy.enable_mcp)
+
+            return True
         except Exception:
             return False
 

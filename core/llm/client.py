@@ -6,6 +6,7 @@ Delegates response parsing to ``core.llm.response_handler``.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime
 from typing import Optional, Callable
@@ -22,16 +23,38 @@ from core.config import load_app_config, AppConfig
 from core.llm.response_handler import parse_non_stream_response, parse_stream_response
 
 
+logger = logging.getLogger(__name__)
+
+
+def _format_runtime_error(error: Exception) -> str:
+    error_type = type(error).__name__
+    detail = (str(error) or "").strip()
+    if detail:
+        return f"[{error_type}] {detail}"
+    return f"[{error_type}] 未知错误"
+
+
 class LLMClient:
     """Handles chat interactions with LLM providers."""
 
-    def __init__(self, timeout: float = 120.0, mcp_manager=None):
+    def __init__(self, timeout: float | None = None, mcp_manager=None):
+        if timeout is None:
+            try:
+                timeout = float(load_app_config().llm_timeout_seconds)
+            except Exception:
+                timeout = 600.0
         self.timeout = float(timeout)
         if mcp_manager is not None:
             self.mcp_manager = mcp_manager
         else:
             from core.tools.manager import McpManager
             self.mcp_manager = McpManager()
+
+    def set_timeout(self, timeout: float) -> None:
+        try:
+            self.timeout = max(30.0, min(3600.0, float(timeout)))
+        except Exception:
+            logger.debug("Ignored invalid LLM timeout update: %r", timeout)
 
     async def send_message(
         self,
@@ -100,7 +123,7 @@ class LLMClient:
                 except Exception:
                     pass
 
-            timeout_config = httpx.Timeout(self.timeout, connect=30.0)
+            timeout_config = httpx.Timeout(self.timeout, connect=60.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
                 # ===== Non-stream mode =====
                 if not request_body.get("stream", True):
@@ -140,12 +163,8 @@ class LLMClient:
                     return msg
 
         except Exception as e:
-            return Message(
-                role="assistant",
-                content=f"Error sending message: {str(e)}",
-                tokens=0,
-                response_time_ms=0,
-            )
+            logger.exception("LLM send_message failed: %s", _format_runtime_error(e))
+            raise RuntimeError(f"Error sending message: {_format_runtime_error(e)}") from e
 
     @staticmethod
     def _attach_metadata(

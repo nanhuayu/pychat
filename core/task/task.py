@@ -13,6 +13,7 @@ This module now focuses on orchestration:
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import threading
 from typing import Any, Callable, Optional
@@ -44,8 +45,13 @@ logger = logging.getLogger(__name__)
 
 # Modes where the agent should auto-continue when LLM returns text
 # without tool calls (nudge it to keep working or call attempt_completion).
-_AUTO_CONTINUE_MODES = frozenset({"agent", "code", "debug"})
+_AUTO_CONTINUE_MODES = frozenset({"agent", "code", "debug", "architect", "orchestrator"})
 _MAX_NUDGE_COUNT = 3
+
+_MODE_SWITCH_MESSAGE = (
+    "[MODE SWITCHED] The conversation mode has changed. "
+    "Continue under the new mode's responsibilities, tool set, and completion rules."
+)
 
 _NUDGE_TEXT = (
     "[AUTO-CONTINUE] You responded without using any tools. "
@@ -59,6 +65,8 @@ _REPETITION_WARNING = (
     "This is not making progress. Please try a different approach, use different arguments, "
     "or call `attempt_completion` if done."
 )
+
+_STATE_BOOTSTRAP_MODES = frozenset({"agent", "code", "debug", "architect", "orchestrator"})
 
 
 class Task:
@@ -132,6 +140,8 @@ class Task:
             turn_context = outcome.context
             if outcome.final_message is not None:
                 final_assistant = outcome.final_message
+            if outcome.next_policy is not None:
+                policy = outcome.next_policy
 
             if outcome.kind == TurnOutcomeKind.CONTINUE:
                 continue
@@ -166,6 +176,7 @@ class Task:
 
         emitter.emit(TaskEventKind.TURN_START, turn=turn_context.turn, detail=f"Turn {turn_context.turn}/{turns_limit}")
         turn_context.state = TaskTurnState.PRE_TURN_HOOKS
+        self._bootstrap_session_state(conversation, policy, turn_context.turn)
         for hook in self._pre_turn_hooks:
             try:
                 hook(conversation, turn_context.turn, policy)
@@ -391,13 +402,162 @@ class Task:
                 tool_msg.metadata["name"] = tool_name
             except Exception as e:
                 logger.debug("Failed to set tool metadata: %s", e)
+
+            switched_mode = str((context.state or {}).pop("_mode_switch", "") or "").strip().lower()
+            next_policy = None
+            if switched_mode:
+                next_policy = self._build_switched_policy(
+                    current_policy=policy,
+                    conversation=conversation,
+                    next_mode=switched_mode,
+                )
+                conversation.mode = switched_mode
+                try:
+                    tool_msg.metadata["mode_switch"] = switched_mode
+                except Exception:
+                    pass
+
             self._tool_executor.attach_state_snapshot(conversation, tool_msg)
             emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=tool_msg)
             conversation.add_message(tool_msg)
 
+            if next_policy is not None:
+                turn_context.nudge_count = 0
+                turn_context.runtime_messages = [Message(role="user", content=_MODE_SWITCH_MESSAGE)]
+                turn_context.state = TaskTurnState.TURN_COMPLETE
+                return TurnOutcome(
+                    kind=TurnOutcomeKind.CONTINUE,
+                    context=turn_context,
+                    final_message=assistant_msg,
+                    next_policy=next_policy,
+                )
+
         turn_context.state = TaskTurnState.TURN_COMPLETE
         turn_context.runtime_messages = []
         return TurnOutcome(kind=TurnOutcomeKind.CONTINUE, context=turn_context, final_message=assistant_msg)
+
+    def _build_switched_policy(
+        self,
+        *,
+        current_policy: RunPolicy,
+        conversation: Conversation,
+        next_mode: str,
+    ) -> RunPolicy:
+        from core.config.schema import RetryConfig
+        from core.modes.manager import ModeManager
+        from core.task.builder import build_run_policy
+
+        mode_manager = ModeManager(getattr(conversation, "work_dir", None) or None)
+        retry_cfg = RetryConfig(
+            max_retries=int(getattr(current_policy.retry, "max_retries", 3) or 3),
+            base_delay=float(getattr(current_policy.retry, "base_delay", 1.0) or 1.0),
+            backoff_factor=float(getattr(current_policy.retry, "backoff_factor", 2.0) or 2.0),
+        )
+        next_policy = build_run_policy(
+            mode_slug=str(next_mode or "chat") or "chat",
+            enable_thinking=bool(current_policy.enable_thinking),
+            enable_search=bool(current_policy.enable_search),
+            enable_mcp=bool(current_policy.enable_mcp),
+            mode_manager=mode_manager,
+            retry_config=retry_cfg,
+        )
+        return replace(
+            next_policy,
+            model=current_policy.model,
+            temperature=current_policy.temperature,
+            max_tokens=current_policy.max_tokens,
+        )
+
+    def _bootstrap_session_state(self, conversation: Conversation, policy: RunPolicy, turn: int) -> None:
+        """Ensure agent-like modes start with usable todo/plan/memory state."""
+        mode_slug = str(getattr(policy, "mode", "chat") or "chat").strip().lower()
+        if mode_slug not in _STATE_BOOTSTRAP_MODES:
+            return
+
+        try:
+            state = conversation.get_state()
+        except Exception:
+            return
+
+        changed = False
+
+        try:
+            latest_user = ""
+            for msg in reversed(getattr(conversation, "messages", []) or []):
+                if getattr(msg, "role", "") == "user":
+                    latest_user = (getattr(msg, "content", "") or "").strip()
+                    if latest_user:
+                        break
+        except Exception:
+            latest_user = ""
+
+        try:
+            if not state.get_active_tasks() and latest_user:
+                from models.state import Task as SessionTask, TaskPriority
+
+                summary = latest_user.replace("\n", " ").strip()
+                if len(summary) > 120:
+                    summary = summary[:117] + "..."
+                current_seq = int(conversation.current_seq_id() or 0)
+                state.tasks.append(
+                    SessionTask(
+                        content=summary or f"Complete the current {mode_slug} task",
+                        priority=TaskPriority.HIGH,
+                        created_seq=current_seq,
+                        updated_seq=current_seq,
+                    )
+                )
+                changed = True
+        except Exception as e:
+            logger.debug("Failed to seed session task: %s", e)
+
+        try:
+            plan_doc = state.ensure_document("plan")
+            if not (plan_doc.content or "").strip() and latest_user:
+                plan_doc.content = (
+                    f"Mode: {mode_slug}\n"
+                    f"Turn: {turn}\n"
+                    "Goal:\n"
+                    f"{latest_user.strip()}\n\n"
+                    "Working Plan:\n"
+                    "1. Gather context\n"
+                    "2. Execute the next concrete step\n"
+                    "3. Update todo/memory as new facts are confirmed"
+                )
+                plan_doc.updated_seq = int(conversation.current_seq_id() or 0)
+                changed = True
+        except Exception as e:
+            logger.debug("Failed to seed plan document: %s", e)
+
+        try:
+            memory_doc = state.ensure_document("memory")
+            if not (memory_doc.content or "").strip():
+                memory_doc.content = (
+                    "Store confirmed repo facts, important decisions, verified commands, "
+                    "or user preferences here when they become relevant."
+                )
+                memory_doc.updated_seq = int(conversation.current_seq_id() or 0)
+                changed = True
+        except Exception as e:
+            logger.debug("Failed to seed memory document: %s", e)
+
+        try:
+            if "active_mode" not in state.memory:
+                state.memory["active_mode"] = mode_slug
+                changed = True
+            work_dir = str(getattr(conversation, "work_dir", "") or "").strip()
+            if work_dir and state.memory.get("work_dir") != work_dir:
+                state.memory["work_dir"] = work_dir
+                changed = True
+        except Exception as e:
+            logger.debug("Failed to seed structured memory: %s", e)
+
+        if changed:
+            try:
+                state.last_updated_seq = int(conversation.current_seq_id() or 0)
+                conversation.set_state(state)
+            except Exception as e:
+                logger.debug("Failed to persist bootstrapped session state: %s", e)
 
     async def _run_subtask(
         self,

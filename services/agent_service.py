@@ -24,8 +24,8 @@ class AgentService:
         app_settings: dict,
         mode_slug: str | None = None,
         enable_thinking: bool | None = None,
-        enable_search: bool = False,
-        enable_mcp: bool = False,
+        enable_search: bool | None = None,
+        enable_mcp: bool | None = None,
         work_dir: str | None = None,
     ):
         """Build a RunPolicy from conversation settings + app config.
@@ -58,8 +58,8 @@ class AgentService:
         return build_run_policy(
             mode_slug=slug,
             enable_thinking=bool(enable_thinking),
-            enable_search=bool(enable_search),
-            enable_mcp=bool(enable_mcp),
+            enable_search=enable_search,
+            enable_mcp=enable_mcp,
             mode_manager=mm,
             retry_config=retry_config,
         )

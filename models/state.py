@@ -8,7 +8,7 @@ This module implements the "State-Driven + Event-Sourcing Lite" architecture:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Set
 from enum import Enum
 import uuid
 import copy
@@ -199,7 +199,12 @@ class SessionState:
         """Find task by ID"""
         return next((t for t in self.tasks if t.id == task_id), None)
 
-    def to_prompt_view(self) -> str:
+    def to_prompt_view(
+        self,
+        *,
+        include_documents: bool = True,
+        exclude_documents: Optional[Set[str]] = None,
+    ) -> str:
         """
         Render state as Markdown for System Prompt injection.
         
@@ -208,9 +213,9 @@ class SessionState:
         """
         blocks = []
         
-        # NOTE: Summary is NOT rendered here — it is injected separately
-        # at the end of the system prompt inside <conversation-summary> tags
-        # by system_builder.py to avoid duplication.
+        # NOTE: Summary is NOT rendered here. It is assembled separately
+        # as a first-class context section alongside environment metadata
+        # and recent full history.
         
         # 1. Current todo section
         active_tasks = self.get_active_todos()
@@ -234,12 +239,16 @@ class SessionState:
             blocks.append("\n".join(mem_lines))
 
         # 3. Session documents (plan/report/memory notes)
-        if self.documents:
+        excluded = {str(name).strip().lower() for name in (exclude_documents or set()) if str(name).strip()}
+        if include_documents and self.documents:
             doc_lines = ["### Session Documents"]
             for name, doc in self.documents.items():
+                if str(name).strip().lower() in excluded:
+                    continue
                 preview = (doc.content[:150] + "...") if len(doc.content) > 150 else doc.content
                 doc_lines.append(f"\n**{name}**:\n{preview}")
-            blocks.append("\n".join(doc_lines))
+            if len(doc_lines) > 1:
+                blocks.append("\n".join(doc_lines))
         
         if not blocks:
             return ""

@@ -5,6 +5,7 @@ import sys
 import os
 import asyncio
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -24,6 +25,7 @@ from services.search_service import SearchService
 
 from core.tools.registry import ToolRegistry
 from core.tools.proxies import McpProxyTool
+from core.tools.naming import MCP_TOOL_PUBLIC_PREFIX, is_mcp_tool_name, parse_mcp_tool_name
 from core.tools.system.search import WebSearchTool
 
 # System Tools
@@ -42,6 +44,7 @@ from core.tools.system.patch import PatchTool
 from core.tools.system.state_mgr import StateMgrTool
 from core.tools.system.multi_agent import NewTaskTool, AttemptCompletionTool, SwitchModeTool
 from core.tools.system.document_tools import ManageDocumentTool
+from core.tools.system.skills import LoadSkillTool, ReadSkillResourceTool
 
 logger = logging.getLogger(__name__)
 
@@ -49,23 +52,21 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _PersistentMcpSession:
     signature: str
-    stdio_context: Any
-    session_context: Any
-    session: Any
+    queue: Any
+    task: Any
+
+    async def call_tool(self, tool_name: str, arguments: dict) -> Any:
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        await self.queue.put(("call", tool_name, arguments, future))
+        return await future
 
     async def close(self) -> None:
-        session_error: Optional[Exception] = None
-        try:
-            await self.session_context.__aexit__(None, None, None)
-        except Exception as exc:
-            session_error = exc
-        try:
-            await self.stdio_context.__aexit__(None, None, None)
-        except Exception as exc:
-            if session_error is None:
-                session_error = exc
-        if session_error is not None:
-            raise session_error
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        await self.queue.put(("close", None, None, future))
+        await future
+        await self.task
 
 class McpManager:
     """MCP service manager.
@@ -91,6 +92,10 @@ class McpManager:
         self._workspace_root = Path(os.getcwd()).resolve()
         self._mcp_schema_cache: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
         self._persistent_sessions: Dict[Tuple[str, str], _PersistentMcpSession] = {}
+        self._mcp_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._mcp_loop_thread: Optional[threading.Thread] = None
+        self._mcp_loop_lock = threading.Lock()
+        self._mcp_loop_ready = threading.Event()
 
     def _register_default_system_tools(self):
         tools = [
@@ -102,6 +107,7 @@ class McpManager:
             PatchTool(),
             StateMgrTool(),
             ManageDocumentTool(),
+            LoadSkillTool(), ReadSkillResourceTool(),
             NewTaskTool(), AttemptCompletionTool(), SwitchModeTool(),
         ]
         for tool in tools:
@@ -134,7 +140,7 @@ class McpManager:
 
         # 2. MCP Tools
         if include_mcp and MCP_AVAILABLE:
-            await self._refresh_mcp_tools()
+            await self._run_on_mcp_loop(self._refresh_mcp_tools_impl())
 
         # 3. Return schemas from Registry
         # Filter based on what was requested?
@@ -153,7 +159,7 @@ class McpManager:
             if not isinstance(name, str) or not name:
                 continue
 
-            is_mcp = name.startswith("mcp__")
+            is_mcp = is_mcp_tool_name(name)
             is_search = name == "builtin_web_search"
 
             if is_search:
@@ -168,10 +174,10 @@ class McpManager:
 
         return filtered_schemas
 
-    async def _refresh_mcp_tools(self):
+    async def _refresh_mcp_tools_impl(self):
         """Register MCP tool proxies using cached schemas where possible."""
         self.servers = self.storage.load_mcp_servers()
-        self.registry.unregister_prefix("mcp__")
+        self.registry.unregister_prefix(MCP_TOOL_PUBLIC_PREFIX)
         active_servers: Dict[str, str] = {}
         
         for config in self.servers:
@@ -203,16 +209,14 @@ class McpManager:
             if key[1] not in active_servers or handle.signature != active_servers.get(key[1])
         ]
         for key in stale_session_keys:
-            await self._close_persistent_session(key)
+            await self._close_persistent_session_impl(key)
 
-    async def execute_tool_with_context(self, tool_name: str, arguments: dict, context) -> str:
+    async def execute_tool_with_context(self, tool_name: str, arguments: dict, context):
         """
         Delegate execution to Registry.
         Note: Called by the unified runtime (e.g. MessageEngine via UI runtime).
         """
-        # `context` is a ToolContext created by the caller.
-        result = await self.registry.execute(tool_name, arguments, context)
-        return result.to_string()
+        return await self.registry.execute(tool_name, arguments, context)
 
     async def call_tool(
         self,
@@ -221,69 +225,34 @@ class McpManager:
         work_dir: Optional[str] = None,
         conversation_id: Optional[str] = None,
     ) -> Any:
-        """
-        Execute an MCP tool (called by McpProxyTool).
-        Handles the connection management.
-        """
-        # Parse tool name to find config
-        # tool_name is "mcp__{server}__{tool}"
-        # We need to reverse map or iterate configs.
-        # But McpProxyTool knows the config! 
-        # Wait, McpProxyTool called self.call_tool(self._name, ...)
-        # If we pass the Config object to call_tool, it's easier.
-        # But McpManager.call_tool signature is (tool_name, args, work_dir).
-        
-        # Let's find the config from the name.
-        parts = tool_name.split("__")
-        if len(parts) < 3:
-             return f"Invalid MCP tool name: {tool_name}"
-        
-        server_name = parts[1]
-        real_tool_name = "__".join(parts[2:])
-        
-        # Find config
-        config = next((c for c in self.servers if c.name == server_name), None)
-        if not config:
-            # Try reloading
-            self.servers = self.storage.load_mcp_servers()
-            config = next((c for c in self.servers if c.name == server_name), None)
-            
-        if not config:
-            return f"Server {server_name} not found or disabled"
-
-        session_key = self._session_key(conversation_id, server_name)
-        for attempt_index in range(2):
-            try:
-                session = await self._get_or_create_persistent_session(
-                    config,
-                    conversation_id=conversation_id,
-                )
-                result = await session.call_tool(real_tool_name, arguments)
-                return self._format_tool_result(result)
-            except Exception as e:
-                logger.warning(
-                    "MCP tool call failed (%s -> %s, attempt %s): %s",
-                    server_name,
-                    real_tool_name,
-                    attempt_index + 1,
-                    e,
-                )
-                await self._close_persistent_session(session_key)
-                if attempt_index >= 1:
-                    return f"MCP Execution Error: {e}"
+        return await self._run_on_mcp_loop(
+            self._call_tool_impl(
+                tool_name,
+                arguments,
+                work_dir=work_dir,
+                conversation_id=conversation_id,
+            )
+        )
 
     async def close_conversation_sessions(self, conversation_id: Optional[str]) -> None:
         conv_key = (conversation_id or "").strip()
-        if not conv_key:
+        if not conv_key or not self._has_mcp_loop():
             return
-        keys = [key for key in self._persistent_sessions.keys() if key[0] == conv_key]
-        for key in keys:
-            await self._close_persistent_session(key)
+        await self._run_on_mcp_loop(self._close_conversation_sessions_impl(conv_key))
 
     async def shutdown(self) -> None:
-        keys = list(self._persistent_sessions.keys())
-        for key in keys:
-            await self._close_persistent_session(key)
+        if not self._has_mcp_loop():
+            return
+        await self._run_on_mcp_loop(self._shutdown_impl())
+        loop = self._mcp_loop
+        thread = self._mcp_loop_thread
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        self._mcp_loop = None
+        self._mcp_loop_thread = None
+        self._mcp_loop_ready.clear()
 
     def _config_signature(self, config: McpServerConfig) -> str:
         payload = {
@@ -326,17 +295,14 @@ class McpManager:
         return schemas
 
     async def _open_persistent_session(self, config: McpServerConfig) -> _PersistentMcpSession:
-        params = self._build_server_params(config)
-        stdio_context = stdio_client(params)
-        read, write = await stdio_context.__aenter__()
-        session_context = ClientSession(read, write)
-        session = await session_context.__aenter__()
-        await session.initialize()
+        queue: asyncio.Queue = asyncio.Queue()
+        ready = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(self._persistent_session_worker(config, queue, ready))
+        await ready
         return _PersistentMcpSession(
             signature=self._config_signature(config),
-            stdio_context=stdio_context,
-            session_context=session_context,
-            session=session,
+            queue=queue,
+            task=task,
         )
 
     async def _get_or_create_persistent_session(
@@ -349,14 +315,14 @@ class McpManager:
         signature = self._config_signature(config)
         handle = self._persistent_sessions.get(key)
         if handle and handle.signature == signature:
-            return handle.session
+            return handle
         if handle:
-            await self._close_persistent_session(key)
+            await self._close_persistent_session_impl(key)
         handle = await self._open_persistent_session(config)
         self._persistent_sessions[key] = handle
-        return handle.session
+        return handle
 
-    async def _close_persistent_session(self, key: Tuple[str, str]) -> None:
+    async def _close_persistent_session_impl(self, key: Tuple[str, str]) -> None:
         handle = self._persistent_sessions.pop(key, None)
         if not handle:
             return
@@ -364,6 +330,139 @@ class McpManager:
             await handle.close()
         except Exception as exc:
             logger.debug("Failed to close MCP session %s: %s", key, exc)
+
+    async def _call_tool_impl(
+        self,
+        tool_name: str,
+        arguments: dict,
+        work_dir: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Any:
+        server_name, real_tool_name = parse_mcp_tool_name(tool_name)
+        if not server_name or not real_tool_name:
+            return f"Invalid MCP tool name: {tool_name}"
+
+        config = next((c for c in self.servers if c.name == server_name), None)
+        if not config:
+            self.servers = self.storage.load_mcp_servers()
+            config = next((c for c in self.servers if c.name == server_name), None)
+
+        if not config:
+            return f"Server {server_name} not found or disabled"
+
+        session_key = self._session_key(conversation_id, server_name)
+        for attempt_index in range(2):
+            try:
+                session = await self._get_or_create_persistent_session(
+                    config,
+                    conversation_id=conversation_id,
+                )
+                result = await session.call_tool(real_tool_name, arguments)
+                return self._format_tool_result(result)
+            except Exception as e:
+                logger.warning(
+                    "MCP tool call failed (%s -> %s, attempt %s): %s",
+                    server_name,
+                    real_tool_name,
+                    attempt_index + 1,
+                    e,
+                )
+                await self._close_persistent_session_impl(session_key)
+                if attempt_index >= 1:
+                    return f"MCP Execution Error: {e}"
+
+    async def _close_conversation_sessions_impl(self, conv_key: str) -> None:
+        keys = [key for key in self._persistent_sessions.keys() if key[0] == conv_key]
+        for key in keys:
+            await self._close_persistent_session_impl(key)
+
+    async def _shutdown_impl(self) -> None:
+        keys = list(self._persistent_sessions.keys())
+        for key in keys:
+            await self._close_persistent_session_impl(key)
+
+    async def _persistent_session_worker(
+        self,
+        config: McpServerConfig,
+        queue: asyncio.Queue,
+        ready: asyncio.Future,
+    ) -> None:
+        params = self._build_server_params(config)
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    if not ready.done():
+                        ready.set_result(True)
+
+                    while True:
+                        action, tool_name, arguments, future = await queue.get()
+                        if action == "close":
+                            if future is not None and not future.done():
+                                future.set_result(True)
+                            break
+
+                        if action != "call":
+                            if future is not None and not future.done():
+                                future.set_exception(RuntimeError(f"Unsupported MCP action: {action}"))
+                            continue
+
+                        try:
+                            result = await session.call_tool(tool_name, arguments or {})
+                        except Exception as exc:
+                            if future is not None and not future.done():
+                                future.set_exception(exc)
+                        else:
+                            if future is not None and not future.done():
+                                future.set_result(result)
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            raise
+
+    def _has_mcp_loop(self) -> bool:
+        loop = self._mcp_loop
+        return bool(loop and loop.is_running())
+
+    def _ensure_mcp_loop(self) -> None:
+        with self._mcp_loop_lock:
+            if self._has_mcp_loop():
+                return
+
+            self._mcp_loop_ready.clear()
+            thread = threading.Thread(target=self._run_mcp_loop, name="PyChat-MCP", daemon=True)
+            self._mcp_loop_thread = thread
+            thread.start()
+
+        self._mcp_loop_ready.wait(timeout=5)
+        if not self._has_mcp_loop():
+            raise RuntimeError("Failed to start MCP event loop")
+
+    def _run_mcp_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._mcp_loop = loop
+        self._mcp_loop_ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            try:
+                loop.run_until_complete(loop.shutdown_default_executor())
+            except Exception:
+                pass
+            loop.close()
+
+    async def _run_on_mcp_loop(self, coro: Any) -> Any:
+        self._ensure_mcp_loop()
+        loop = self._mcp_loop
+        if loop is None:
+            raise RuntimeError("MCP event loop is unavailable")
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return await asyncio.wrap_future(future)
 
     @staticmethod
     def _format_tool_result(result: Any) -> str:

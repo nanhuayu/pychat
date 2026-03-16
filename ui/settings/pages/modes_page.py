@@ -209,7 +209,7 @@ class ModesPage(QWidget):
         right_layout.addWidget(form_group)
 
         hint = QLabel(
-            "提示：这些提示词是按模式保存的（chat/agent/architect/code…都在这里编辑）。\n"
+            "提示：这些提示词是按模式保存的（chat/agent/plan/code…都在这里编辑）。\n"
             "保存后会立即影响模式下拉框与 system prompt 生成。"
         )
         hint.setWordWrap(True)
@@ -360,7 +360,7 @@ class ModesPage(QWidget):
             self.mode_combo.blockSignals(False)
 
     def _add_mode(self) -> None:
-        slug, ok = QInputDialog.getText(self, "新增模式", "请输入 slug（例如：architect）")
+        slug, ok = QInputDialog.getText(self, "新增模式", "请输入 slug（例如：plan）")
         if not ok:
             return
         slug = (slug or "").strip().lower()

@@ -148,14 +148,5 @@ Call this tool whenever:
             return ToolResult("No changes made. Provide summary, tasks, memory or archive_context.")
         
         result_text = "State updated:\n" + "\n".join(feedback)
-        
-        # Also return current state summary for LLM awareness
-        active_tasks = state.get_active_tasks()
-        if active_tasks:
-            result_text += f"\n\n📋 Active tasks: {len(active_tasks)}"
-        if state.memory:
-            result_text += f"\n💾 Memory keys: {list(state.memory.keys())}"
-        if state.archived_summaries:
-            result_text += f"\n📚 Archived summaries: {len(state.archived_summaries)}"
-            
+
         return ToolResult(result_text)

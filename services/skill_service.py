@@ -1,8 +1,14 @@
-"""Skill activation and discovery service."""
+"""Workspace-aware skill discovery and declared invocation service."""
 from __future__ import annotations
 
-from models.conversation import Conversation
-from core.skills import SkillsManager
+from core.skills import (
+    Skill,
+    SkillExecutionCheck,
+    SkillInvocationSpec,
+    SkillsManager,
+    check_skill_execution_availability,
+    resolve_skill_invocation_spec,
+)
 
 
 class SkillService:
@@ -11,21 +17,37 @@ class SkillService:
     def list_for_workdir(self, work_dir: str | None) -> list:
         return SkillsManager(work_dir or ".").list_skills()
 
+    def get(self, skill_name: str, *, work_dir: str | None) -> Skill | None:
+        return SkillsManager(work_dir or ".").get(skill_name)
+
     def exists(self, skill_name: str, *, work_dir: str | None) -> bool:
         return SkillsManager(work_dir or ".").get(skill_name) is not None
 
-    def activate_for_conversation(self, conversation: Conversation, skill_name: str) -> bool:
-        work_dir = getattr(conversation, "work_dir", ".") or "."
-        normalized = str(skill_name or "").strip().lower()
-        if not normalized:
-            return False
-        if not self.exists(normalized, work_dir=work_dir):
-            return False
+    def get_invocation_spec(
+        self,
+        skill_name: str,
+        *,
+        work_dir: str | None,
+        fallback_mode: str = "agent",
+    ) -> SkillInvocationSpec | None:
+        skill = self.get(skill_name, work_dir=work_dir)
+        if skill is None:
+            return None
+        return resolve_skill_invocation_spec(skill, fallback_mode=fallback_mode)
 
-        settings = conversation.settings or {}
-        active = [str(item).strip().lower() for item in (settings.get("active_skills") or []) if str(item).strip()]
-        if normalized not in active:
-            active.append(normalized)
-        settings["active_skills"] = active
-        conversation.settings = settings
-        return True
+    def check_execution(
+        self,
+        skill_name: str,
+        *,
+        work_dir: str | None,
+        tools,
+        fallback_mode: str = "agent",
+    ) -> SkillExecutionCheck | None:
+        skill = self.get(skill_name, work_dir=work_dir)
+        if skill is None:
+            return None
+        return check_skill_execution_availability(
+            skill,
+            tools,
+            fallback_mode=fallback_mode,
+        )

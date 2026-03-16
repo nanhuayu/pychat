@@ -13,7 +13,6 @@
 """
 from __future__ import annotations
 
-import copy
 import logging
 from typing import Any, List, Optional
 
@@ -22,8 +21,8 @@ from models.provider import Provider
 from core.context.condenser import ContextCondenser, CondensePolicy
 from core.llm.token_utils import estimate_conversation_tokens
 from core.prompts.system_builder import build_system_prompt
-from core.prompts.history import count_user_turn_blocks, get_effective_history
-from core.prompts.user_context import build_runtime_context_block, wrap_user_request
+from core.prompts.context_assembler import build_context_messages
+from core.prompts.history import count_user_turn_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,7 @@ class ContextManager:
         1. 检查是否需要压缩（消息数或 token 数超过阈值）
         2. 如果需要，触发自动压缩
         3. 获取有效的历史消息（过滤已压缩消息）
-        4. 构建系统消息（包含历史总结）
+        4. 构建系统消息（稳定规则 / 工具 / 状态）
         5. 返回完整的消息列表
 
         Args:
@@ -74,7 +73,7 @@ class ContextManager:
             default_work_dir: 默认工作目录
 
         Returns:
-            准备好的消息列表（系统消息 + 历史消息）
+            准备好的消息列表（系统消息 + 环境/summary/最近历史）
         """
         # 1. 检查是否需要压缩
         should_compress = self._should_compress(
@@ -96,21 +95,15 @@ class ContextManager:
                 policy=self.policy,
             )
 
-        # 3. 获取有效历史消息（最后 N 个完整 user-led turn blocks）
-        effective_messages = get_effective_history(
-            conversation.messages,
-            keep_last_turns=self.policy.keep_last_n,
-        )
-        effective_messages = self._attach_runtime_context(
-            effective_messages,
-            conversation=conversation,
+        # 3. 按三段式装配环境信息 + summary + 最近完整历史
+        effective_messages = build_context_messages(
+            conversation,
             app_config=app_config,
+            keep_last_turns=self.policy.keep_last_n,
+            default_work_dir=default_work_dir,
         )
 
-        # 4. 构建系统消息（包含历史总结）
-        # 注意：build_system_prompt 已经在内部处理 conversation-summary 注入
-        from core.prompts.system_builder import build_system_prompt
-
+        # 4. 构建系统消息（只保留稳定规则 / 工具 / 状态）
         system_content = build_system_prompt(
             conversation=conversation,
             tools=tools,
@@ -185,33 +178,4 @@ class ContextManager:
         在创建新对话时调用。
         """
         pass  # 当前无需重置状态
-
-    def _attach_runtime_context(
-        self,
-        messages: List[Message],
-        *,
-        conversation: Conversation,
-        app_config: Any,
-    ) -> List[Message]:
-        """Wrap only the latest real user request with ephemeral runtime context."""
-        prepared = [copy.deepcopy(msg) for msg in messages]
-        prompt_cfg = getattr(app_config, "prompts", None)
-        max_depth = max(1, int(getattr(prompt_cfg, "file_tree_max_depth", 2) or 2))
-        context_block = build_runtime_context_block(
-            conversation,
-            include_environment=bool(getattr(prompt_cfg, "include_environment", True)),
-            include_workspace=True,
-            include_summary=False,
-            max_depth=max_depth,
-        )
-        if not context_block:
-            return prepared
-
-        for index in range(len(prepared) - 1, -1, -1):
-            msg = prepared[index]
-            if msg.role != "user":
-                continue
-            msg.content = wrap_user_request(msg.content or "", context_block)
-            break
-        return prepared
 

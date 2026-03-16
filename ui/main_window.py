@@ -47,11 +47,13 @@ class MainWindow(QMainWindow):
         self.provider_service = self._container.provider_service
         self.mcp_manager = self._container.mcp_manager
         self.command_registry = self._container.command_registry
+        self.command_service = self._container.command_service
         self.message_runtime = MessageRuntime(self.client, mcp_manager=self.mcp_manager, parent=self)
 
         # Service layer
         self.conv_service = self._container.conv_service
         self.context_service = self._container.context_service
+        self.skill_service = self._container.skill_service
         
         self.providers: list[Provider] = []
         self.current_conversation: Optional[Conversation] = None
@@ -186,6 +188,8 @@ class MainWindow(QMainWindow):
     def _create_menu_bar(self):
         menubar = self.menuBar()
         menubar.clear()
+        compact_presentation = self.command_registry.get_menu_presentation("compact")
+        clear_presentation = self.command_registry.get_menu_presentation("clear")
         
         file_menu = menubar.addMenu("文件")
         conversation_menu = menubar.addMenu("会话")
@@ -234,6 +238,14 @@ class MainWindow(QMainWindow):
 
         conversation_menu.addSeparator()
 
+        clear_label = getattr(clear_presentation, "menu_label", "") or "清空并新建会话"
+        self.clear_conversation_action = QAction(clear_label, self)
+        self.clear_conversation_action.triggered.connect(self._new_conversation)
+        clear_tip = getattr(clear_presentation, "menu_tooltip", "") or clear_label
+        self.clear_conversation_action.setToolTip(clear_tip)
+        self.clear_conversation_action.setStatusTip(clear_tip)
+        conversation_menu.addAction(self.clear_conversation_action)
+
         self.conversation_settings_action = QAction("会话设置...", self)
         self.conversation_settings_action.triggered.connect(self._open_conversation_settings)
         conversation_menu.addAction(self.conversation_settings_action)
@@ -242,8 +254,12 @@ class MainWindow(QMainWindow):
         self.provider_settings_action.triggered.connect(self._open_provider_settings)
         conversation_menu.addAction(self.provider_settings_action)
 
-        self.compact_action = QAction("压缩上下文", self)
+        compact_label = getattr(compact_presentation, "menu_label", "") or "压缩上下文"
+        self.compact_action = QAction(compact_label, self)
         self.compact_action.triggered.connect(self._trigger_compact)
+        compact_tip = getattr(compact_presentation, "menu_tooltip", "") or compact_label
+        self.compact_action.setToolTip(compact_tip)
+        self.compact_action.setStatusTip(compact_tip)
         conversation_menu.addAction(self.compact_action)
 
         edit_menu = menubar.addMenu("编辑")
@@ -517,8 +533,8 @@ class MainWindow(QMainWindow):
             system_prompt=opt_sys,
         )
 
-    def _send_message(self, content: str, images: list):
-        self._msg_presenter.send(content, images)
+    def _send_message(self, content: str, images: list, metadata=None):
+        self._msg_presenter.send(content, images, metadata=metadata)
     
     def _start_streaming(self, provider: Provider):
         self._msg_presenter.start_streaming(provider)

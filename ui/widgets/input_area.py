@@ -4,7 +4,6 @@ Input area widget - Compact responsive layout
 
 import logging
 import os
-import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QTextEdit, QLabel, QFileDialog, QComboBox,
@@ -34,13 +33,11 @@ from ui.widgets.input.text_editor import FileCompleterPopup, MessageTextEdit
 
 logger = logging.getLogger(__name__)
 
-_MODE_MENTION_RE = re.compile(r"^@mode:(?P<slug>[a-zA-Z0-9_-]+)(?:\s+(?P<rest>[\s\S]*))?$")
-
 
 class InputArea(QWidget):
     """Input area - single-row compact toolbar + input"""
     
-    message_sent = pyqtSignal(str, list)
+    message_sent = pyqtSignal(str, list, object)
     slash_command_result = pyqtSignal(object)  # CommandResult from / or # commands
     cancel_requested = pyqtSignal()
     conversation_settings_requested = pyqtSignal()
@@ -135,7 +132,7 @@ class InputArea(QWidget):
         # Text input
         self.text_input = MessageTextEdit()
         self.text_input.setObjectName("message_input")
-        self.text_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，#file，@tool，@mode:code)")
+        self.text_input.setPlaceholderText(self._command_registry.build_input_placeholder())
         self.text_input.setMinimumHeight(40)
         self.text_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.text_input.configure_command_registry(self._command_registry, self._build_command_context)
@@ -492,10 +489,11 @@ class InputArea(QWidget):
         }
 
     def _try_handle_command(self, content: str) -> bool:
-        if not self._command_registry.is_command(content):
+        context = self._build_command_context()
+        if not self._command_registry.is_command(content, context):
             return False
 
-        result = self._command_registry.execute(content, self._build_command_context())
+        result = self._command_registry.execute(content, context)
         if result is None:
             return False
 
@@ -503,50 +501,13 @@ class InputArea(QWidget):
         self.slash_command_result.emit(result)
         return True
 
-    def _apply_mode_mention(self, content: str) -> str:
-        """Apply standalone @mode mentions before normal send/command handling.
-
-        Examples:
-        - @mode:debug
-        - @mode:code fix the failing test
-        """
-        raw = (content or "").strip()
-        if not raw:
-            return raw
-
-        match = _MODE_MENTION_RE.match(raw)
-        if not match:
-            return raw
-
-        slug = (match.group("slug") or "").strip().lower()
-        if not slug:
-            return raw
-
-        idx = self.mode_combo.findData(slug)
-        if idx < 0:
-            return raw
-
-        self.mode_combo.setCurrentIndex(idx)
-        rest = (match.group("rest") or "").strip()
-        if not rest:
-            from core.commands.types import CommandAction, CommandResult
-
-            self.text_input.clear()
-            self.slash_command_result.emit(
-                CommandResult(
-                    action=CommandAction.DISPLAY,
-                    display_text=f"已切换到模式 **{slug}**。",
-                )
-            )
-        return rest
-
     def _emit_message_payload(self, content: str) -> None:
         from core.attachments import process_attachments
 
         result = process_attachments(self._attachments)
         if result.file_content_suffix:
             content += result.file_content_suffix
-        self.message_sent.emit(content, result.encoded_images)
+        self.message_sent.emit(content, result.encoded_images, None)
 
     def _clear_composer(self) -> None:
         self.text_input.clear()
@@ -555,13 +516,12 @@ class InputArea(QWidget):
 
     def _send_message(self):
         content = self.text_input.toPlainText().strip()
-        content = self._apply_mode_mention(content)
 
         if self._try_handle_command(content):
             return
 
         if not content and not self._attachments:
-            self.message_sent.emit("", [])
+            self.message_sent.emit("", [], None)
             return
 
         self._emit_message_payload(content)

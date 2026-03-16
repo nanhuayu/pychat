@@ -1,6 +1,8 @@
 """Process execution helpers used by command-oriented tools."""
 from __future__ import annotations
 
+import locale
+import os
 import re
 import subprocess
 import threading
@@ -32,6 +34,35 @@ _MAX_OUTPUT_BYTES = 50 * 1024
 _DEFAULT_LOG_TAIL_BYTES = 12 * 1024
 
 
+def _dedupe_encodings(encodings: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for encoding in encodings:
+        name = str(encoding or "").strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append(name)
+    return result
+
+
+def _looks_like_utf16(raw: bytes) -> bool:
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return True
+    sample = raw[:128]
+    if not sample:
+        return False
+    nul_count = sample.count(0)
+    return nul_count >= max(2, len(sample) // 6)
+
+
+def _build_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
+
+
 def decode_subprocess_output(data: object) -> str:
     if not data:
         return ""
@@ -44,9 +75,23 @@ def decode_subprocess_output(data: object) -> str:
             return ""
 
     raw = bytes(data)
-    for enc in ("utf-8", "utf-8-sig", "gbk", "mbcs"):
+    encodings: list[str] = []
+    if _looks_like_utf16(raw):
+        encodings.extend(["utf-16", "utf-16-le", "utf-16-be"])
+    encodings.extend(["utf-8", "utf-8-sig"])
+
+    preferred_encoding = str(locale.getpreferredencoding(False) or "").strip()
+    if preferred_encoding:
+        encodings.append(preferred_encoding)
+
+    encodings.extend(["gb18030", "gbk", "mbcs"])
+
+    for enc in _dedupe_encodings(encodings):
         try:
-            return raw.decode(enc)
+            text = raw.decode(enc)
+            if enc.startswith("utf-8") and "\x00" in text and _looks_like_utf16(raw):
+                continue
+            return text
         except Exception:
             pass
     return raw.decode("utf-8", errors="replace")
@@ -162,6 +207,7 @@ class BackgroundProcessManager:
             cwd=str(request.cwd),
             stdout=log_handle,
             stderr=subprocess.STDOUT,
+            env=_build_subprocess_env(),
         )
 
         record = _BackgroundProcessRecord(
@@ -279,6 +325,7 @@ class CommandExecutor:
                 capture_output=True,
                 text=False,
                 timeout=request.timeout_sec,
+                env=_build_subprocess_env(),
             )
             return CommandExecutionResult(
                 exit_code=proc.returncode,

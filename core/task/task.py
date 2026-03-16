@@ -13,6 +13,7 @@ This module now focuses on orchestration:
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 import logging
 import threading
@@ -23,6 +24,7 @@ from models.provider import Provider
 
 from core.llm.client import LLMClient
 from core.tools.manager import McpManager
+from core.tools.base import ToolResult
 from core.config import load_app_config, AppConfig
 from core.task.types import (
     RunPolicy,
@@ -45,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Modes where the agent should auto-continue when LLM returns text
 # without tool calls (nudge it to keep working or call attempt_completion).
-_AUTO_CONTINUE_MODES = frozenset({"agent", "code", "debug", "architect", "orchestrator"})
+_AUTO_CONTINUE_MODES = frozenset({"agent", "code", "debug", "plan", "orchestrator"})
 _MAX_NUDGE_COUNT = 3
 
 _MODE_SWITCH_MESSAGE = (
@@ -66,7 +68,7 @@ _REPETITION_WARNING = (
     "or call `attempt_completion` if done."
 )
 
-_STATE_BOOTSTRAP_MODES = frozenset({"agent", "code", "debug", "architect", "orchestrator"})
+_STATE_BOOTSTRAP_MODES = frozenset({"agent", "code", "debug", "plan", "orchestrator"})
 
 
 class Task:
@@ -356,13 +358,14 @@ class Task:
                 approval_callback=approval_callback,
                 llm_client=self._client,
             )
-            result_text = await self._tool_executor.execute_tool(
+            tool_result = await self._tool_executor.execute_tool(
                 tool_name=tool_name,
                 tool_args=args,
                 allowed=allowed,
                 policy=policy,
                 context=context,
             )
+            result_text = self._tool_result_to_string(tool_result)
 
             subtask_req = (context.state or {}).get("_pending_subtask")
             if subtask_req and isinstance(subtask_req, dict):
@@ -377,31 +380,41 @@ class Task:
                     approval_callback=approval_callback,
                     cancel_event=cancel_event,
                 )
-                result_text = str(subtask_result)
+                tool_result = ToolResult(str(subtask_result))
+                result_text = self._tool_result_to_string(tool_result)
 
             if (context.state or {}).get("_task_completed"):
+                completion_result = str((context.state or {}).get("_completion_result") or result_text or "").strip()
+                completion_command = str((context.state or {}).get("_completion_command") or "").strip()
                 self._tool_executor.sync_state(conversation, context)
-                tool_msg = Message(role="tool", content=str(result_text), tool_call_id=tool_call_id)
-                try:
-                    tool_msg.seq_id = conversation.next_seq_id()
-                except Exception as e:
-                    logger.warning("Failed to assign seq_id to completion tool message: %s", e)
+                tool_msg = self._build_tool_message(
+                    conversation=conversation,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    result=tool_result,
+                    summary="Completion acknowledged.",
+                )
                 emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=tool_msg)
                 conversation.add_message(tool_msg)
+
+                final_msg = self._build_completion_message(
+                    conversation=conversation,
+                    completion_text=completion_result or "Task completed.",
+                    completion_command=completion_command,
+                )
+                emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=final_msg)
+                emitter.emit(TaskEventKind.COMPLETE, turn=turn_context.turn, data=final_msg)
+                conversation.add_message(final_msg)
                 turn_context.state = TaskTurnState.TURN_COMPLETE
-                return TurnOutcome(kind=TurnOutcomeKind.COMPLETE, context=turn_context, final_message=assistant_msg)
+                return TurnOutcome(kind=TurnOutcomeKind.COMPLETE, context=turn_context, final_message=final_msg)
 
             self._tool_executor.sync_state(conversation, context)
-            tool_msg = Message(role="tool", content=str(result_text), tool_call_id=tool_call_id)
-            try:
-                tool_msg.seq_id = conversation.next_seq_id()
-            except Exception as e:
-                logger.warning("Failed to assign seq_id to tool message: %s", e)
-            try:
-                tool_msg.metadata = tool_msg.metadata or {}
-                tool_msg.metadata["name"] = tool_name
-            except Exception as e:
-                logger.debug("Failed to set tool metadata: %s", e)
+            tool_msg = self._build_tool_message(
+                conversation=conversation,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                result=tool_result,
+            )
 
             switched_mode = str((context.state or {}).pop("_mode_switch", "") or "").strip().lower()
             next_policy = None
@@ -417,7 +430,6 @@ class Task:
                 except Exception:
                     pass
 
-            self._tool_executor.attach_state_snapshot(conversation, tool_msg)
             emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=tool_msg)
             conversation.add_message(tool_msg)
 
@@ -435,6 +447,127 @@ class Task:
         turn_context.state = TaskTurnState.TURN_COMPLETE
         turn_context.runtime_messages = []
         return TurnOutcome(kind=TurnOutcomeKind.CONTINUE, context=turn_context, final_message=assistant_msg)
+
+    def _build_tool_message(
+        self,
+        *,
+        conversation: Conversation,
+        tool_name: str,
+        tool_call_id: Optional[str],
+        result: ToolResult | str,
+        summary: Optional[str] = None,
+    ) -> Message:
+        result_text = self._tool_result_to_string(result)
+        tool_msg = Message(role="tool", content=str(result_text), tool_call_id=tool_call_id)
+        try:
+            tool_msg.seq_id = conversation.next_seq_id()
+        except Exception as e:
+            logger.warning("Failed to assign seq_id to tool message: %s", e)
+
+        tool_images = self._extract_tool_images(result)
+        if tool_images:
+            tool_msg.images = tool_images
+
+        try:
+            tool_msg.metadata = tool_msg.metadata or {}
+            tool_msg.metadata["name"] = tool_name
+        except Exception as e:
+            logger.debug("Failed to set tool metadata: %s", e)
+
+        try:
+            tool_msg.summary = summary or self._summarize_tool_result(tool_name, result_text)
+        except Exception as e:
+            logger.debug("Failed to summarize tool result for %s: %s", tool_name, e)
+
+        self._attach_state_snapshot(conversation, tool_msg)
+        return tool_msg
+
+    @staticmethod
+    def _tool_result_to_string(result: ToolResult | str) -> str:
+        if isinstance(result, ToolResult):
+            return result.to_string()
+        return str(result)
+
+    @staticmethod
+    def _extract_tool_images(result: ToolResult | str) -> list[str]:
+        if not isinstance(result, ToolResult):
+            return []
+        content = getattr(result, "content", None)
+        if not isinstance(content, list):
+            return []
+
+        images: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "") != "image":
+                continue
+            image_data = str(block.get("data") or "").strip()
+            mime_type = str(block.get("mimeType") or "image/png").strip() or "image/png"
+            if not image_data:
+                continue
+            if image_data.startswith(("data:", "http://", "https://")):
+                images.append(image_data)
+                continue
+            images.append(f"data:{mime_type};base64,{image_data}")
+        return images
+
+    def _build_completion_message(
+        self,
+        *,
+        conversation: Conversation,
+        completion_text: str,
+        completion_command: str = "",
+    ) -> Message:
+        final_msg = Message(role="assistant", content=(completion_text or "Task completed.").strip())
+        if len(final_msg.content) > 240:
+            final_msg.summary = final_msg.content[:237] + "..."
+        else:
+            final_msg.summary = final_msg.content
+
+        try:
+            final_msg.metadata["completion"] = True
+            if completion_command:
+                final_msg.metadata["completion_command"] = completion_command
+            final_msg.seq_id = conversation.next_seq_id()
+        except Exception as e:
+            logger.debug("Failed to annotate completion message: %s", e)
+
+        self._attach_state_snapshot(conversation, final_msg)
+        return final_msg
+
+    @staticmethod
+    def _summarize_tool_result(tool_name: str, result_text: str) -> str:
+        lines = [line.strip() for line in str(result_text or "").splitlines() if line.strip()]
+        if not lines:
+            return f"{tool_name} completed."
+
+        if tool_name == "manage_state":
+            useful = [
+                line.lstrip("-•✅❌⚠️ ")
+                for line in lines
+                if line not in {"State updated:"} and not line.startswith(("📋", "💾", "📚"))
+            ]
+            if useful:
+                return ("State updated: " + "; ".join(useful[:2]))[:220]
+            return "State updated."
+
+        if tool_name == "manage_document":
+            return lines[0][:220]
+
+        if tool_name == "load_skill":
+            for line in lines:
+                if line.startswith("Skill:"):
+                    return f"Loaded {line.split(':', 1)[1].strip()}."
+            return "Skill loaded."
+
+        if tool_name == "read_skill_resource":
+            return lines[0][:220]
+
+        if tool_name == "attempt_completion":
+            return "Completion acknowledged."
+
+        return lines[0][:220]
 
     def _build_switched_policy(
         self,
@@ -455,9 +588,6 @@ class Task:
         )
         next_policy = build_run_policy(
             mode_slug=str(next_mode or "chat") or "chat",
-            enable_thinking=bool(current_policy.enable_thinking),
-            enable_search=bool(current_policy.enable_search),
-            enable_mcp=bool(current_policy.enable_mcp),
             mode_manager=mode_manager,
             retry_config=retry_cfg,
         )
@@ -514,16 +644,31 @@ class Task:
         try:
             plan_doc = state.ensure_document("plan")
             if not (plan_doc.content or "").strip() and latest_user:
-                plan_doc.content = (
-                    f"Mode: {mode_slug}\n"
-                    f"Turn: {turn}\n"
-                    "Goal:\n"
-                    f"{latest_user.strip()}\n\n"
-                    "Working Plan:\n"
-                    "1. Gather context\n"
-                    "2. Execute the next concrete step\n"
-                    "3. Update todo/memory as new facts are confirmed"
-                )
+                if mode_slug == "plan":
+                    plan_doc.content = (
+                        f"Mode: {mode_slug}\n"
+                        f"Turn: {turn}\n"
+                        "Goal:\n"
+                        f"{latest_user.strip()}\n\n"
+                        "Discovery:\n"
+                        "- Inspect the relevant code paths and documents\n"
+                        "- Capture constraints, risks, and unresolved questions\n\n"
+                        "Implementation Plan:\n"
+                        "1. Gather the missing context\n"
+                        "2. Decide architecture and sequencing\n"
+                        "3. Present a concrete execution plan"
+                    )
+                else:
+                    plan_doc.content = (
+                        f"Mode: {mode_slug}\n"
+                        f"Turn: {turn}\n"
+                        "Goal:\n"
+                        f"{latest_user.strip()}\n\n"
+                        "Working Plan:\n"
+                        "1. Gather context\n"
+                        "2. Execute the next concrete step\n"
+                        "3. Update todo/memory as new facts are confirmed"
+                    )
                 plan_doc.updated_seq = int(conversation.current_seq_id() or 0)
                 changed = True
         except Exception as e:
@@ -542,7 +687,7 @@ class Task:
             logger.debug("Failed to seed memory document: %s", e)
 
         try:
-            if "active_mode" not in state.memory:
+            if state.memory.get("active_mode") != mode_slug:
                 state.memory["active_mode"] = mode_slug
                 changed = True
             work_dir = str(getattr(conversation, "work_dir", "") or "").strip()
@@ -590,6 +735,10 @@ class Task:
                 child_conv.work_dir = getattr(conversation, "work_dir", ".") or "."
             except Exception as e:
                 logger.debug("Failed to inherit work_dir for subtask: %s", e)
+            try:
+                child_conv._state_dict = copy.deepcopy(getattr(conversation, "_state_dict", {}) or {})
+            except Exception as e:
+                logger.debug("Failed to inherit session state for subtask: %s", e)
 
             child_task = Task(client=self._client, mcp_manager=self._mcp_manager)
             result = await child_task.run(
@@ -603,6 +752,8 @@ class Task:
                 cancel_event=cancel_event,
             )
 
+            self._merge_subtask_state(parent_conversation=conversation, child_conversation=child_conv)
+
             if result.status == TaskStatus.COMPLETED and result.final_message:
                 return result.final_message.content or "Sub-task completed (no output)."
             elif result.status == TaskStatus.FAILED:
@@ -613,6 +764,50 @@ class Task:
         except Exception as e:
             logger.error("Sub-task failed: %s", e)
             return f"Sub-task error: {e}"
+
+    def _merge_subtask_state(self, *, parent_conversation: Conversation, child_conversation: Conversation) -> None:
+        try:
+            parent_state = parent_conversation.get_state()
+            child_state = child_conversation.get_state()
+        except Exception as e:
+            logger.debug("Failed to load session state for subtask merge: %s", e)
+            return
+
+        changed = False
+
+        try:
+            for name, child_doc in (child_state.documents or {}).items():
+                normalized = str(name or "").strip().lower()
+                if normalized not in {"plan", "memory", "report", "notes"}:
+                    continue
+                child_content = str(getattr(child_doc, "content", "") or "").strip()
+                if not child_content:
+                    continue
+                existing = parent_state.documents.get(name)
+                if existing is None or child_content != str(getattr(existing, "content", "") or "").strip():
+                    parent_state.documents[name] = copy.deepcopy(child_doc)
+                    changed = True
+        except Exception as e:
+            logger.debug("Failed merging subtask documents: %s", e)
+
+        try:
+            for key, value in (child_state.memory or {}).items():
+                if key == "active_mode":
+                    continue
+                if parent_state.memory.get(key) != value:
+                    parent_state.memory[key] = value
+                    changed = True
+        except Exception as e:
+            logger.debug("Failed merging subtask memory: %s", e)
+
+        if not changed:
+            return
+
+        try:
+            parent_state.last_updated_seq = int(parent_conversation.current_seq_id() or 0)
+            parent_conversation.set_state(parent_state)
+        except Exception as e:
+            logger.debug("Failed to persist merged subtask state: %s", e)
 
     # ------------------------------------------------------------------
     # Context management (condense)

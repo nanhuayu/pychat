@@ -250,6 +250,7 @@ class LLMExecutor:
             request_settings["max_tokens"] = int(policy.max_tokens)
 
         request_conversation.settings = request_settings
+        request_conversation.mode = str(getattr(policy, "mode", "") or request_conversation.mode or "chat")
         request_conversation.model = (
             str(policy.model or "").strip()
             or str(getattr(request_conversation, "model", "") or "").strip()

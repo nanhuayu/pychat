@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
+from core.tools.permissions import ToolPermissionPolicy
 from models.conversation import Conversation, Message
+from services.command_service import CommandExecutionDenied
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -251,7 +253,7 @@ class ConversationPresenter:
 
     def handle_command_result(self, result) -> None:
         host = self._host
-        from core.commands import CommandAction, CommandResult
+        from core.commands import CommandAction, CommandResult, ShellInvocation, SkillInvocation
 
         if isinstance(result, str):
             self._append_info_message(result)
@@ -276,15 +278,47 @@ class ConversationPresenter:
                     host.input_area.mode_combo.setCurrentIndex(idx)
             return
 
-        if result.action == CommandAction.SKILL:
-            skill_name = str(result.data or "").strip()
-            if not skill_name or not host.current_conversation:
+        if result.action == CommandAction.SKILL_RUN:
+            payload = result.data if isinstance(result.data, SkillInvocation) else None
+            skill_name = str(payload.skill_name if payload else "").strip()
+            if not skill_name:
                 return
-            if host.skill_service.activate_for_conversation(host.current_conversation, skill_name):
-                host.conv_service.save(host.current_conversation)
-                self._append_info_message(f"\u2705 Skill **{skill_name}** activated for this conversation.")
-            else:
+            work_dir = getattr(host.current_conversation, "work_dir", ".") if host.current_conversation else "."
+            skill = host.skill_service.get(skill_name, work_dir=work_dir)
+            if skill is None:
                 self._append_info_message(f"Skill `{skill_name}` not found for the current workspace.")
+                return
+
+            spec = host.skill_service.get_invocation_spec(skill_name, work_dir=work_dir)
+            if spec is not None and not spec.user_invocable:
+                self._append_info_message(f"Skill `{skill_name}` is not user-invocable.")
+                return
+
+            user_input = str(payload.user_input if payload else "").strip()
+            content = user_input or f"Run the {skill_name} skill for this request."
+            host._msg_presenter.send(
+                content,
+                [],
+                metadata={
+                    "skill_run": {
+                        "name": skill_name,
+                        "source_prefix": payload.source_prefix if payload else "/",
+                        "original_text": payload.original_text if payload else "",
+                        "user_input": user_input,
+                        "description": str(getattr(skill, "description", "") or ""),
+                        "runtime_mode": getattr(spec, "mode", "agent") if spec else "agent",
+                    }
+                },
+            )
+            return
+
+        if result.action == CommandAction.SHELL_RUN:
+            payload = result.data if isinstance(result.data, ShellInvocation) else None
+            shell_command = str(payload.command_text if payload else "").strip()
+            if not shell_command:
+                return
+
+            self._run_shell_command(payload)
             return
 
         if result.action == CommandAction.EXPORT:
@@ -302,3 +336,68 @@ class ConversationPresenter:
         host.current_conversation.messages.append(info_msg)
         host.chat_view.add_message(info_msg)
         host.conv_service.save(host.current_conversation)
+
+    def _run_shell_command(self, payload: ShellInvocation | None) -> None:
+        host = self._host
+        if payload is None:
+            return
+
+        if not host.current_conversation:
+            self.new()
+        conversation = host.current_conversation
+        if conversation is None:
+            return
+
+        command_text = str(payload.command_text or "").strip()
+        if not command_text:
+            return
+
+        display_command = str(payload.original_text or "").strip() or f"{payload.source_prefix}{command_text}"
+
+        user_msg = Message(role="user", content=display_command)
+        user_msg.metadata["explicit_shell"] = True
+        conversation.add_message(user_msg)
+        host.chat_view.add_message(user_msg)
+
+        try:
+            result_text = host.command_service.execute_shell_invocation(
+                payload,
+                work_dir=getattr(conversation, "work_dir", "") or ".",
+                permission_policy=ToolPermissionPolicy.from_config(host._app_settings),
+                approval_callback=self._ask_command_approval,
+            )
+            assistant_msg = Message(role="assistant", content=result_text)
+            assistant_msg.metadata["explicit_shell_result"] = True
+            assistant_msg.metadata["command"] = command_text
+        except CommandExecutionDenied as exc:
+            assistant_msg = Message(role="assistant", content=str(exc))
+            assistant_msg.metadata["explicit_shell_result"] = True
+            assistant_msg.metadata["command"] = command_text
+            assistant_msg.metadata["denied"] = True
+        except Exception as exc:
+            assistant_msg = Message(role="assistant", content=f"Shell execution failed: {exc}")
+            assistant_msg.metadata["explicit_shell_result"] = True
+            assistant_msg.metadata["command"] = command_text
+            assistant_msg.metadata["error"] = True
+
+        conversation.add_message(assistant_msg)
+        host.chat_view.add_message(assistant_msg)
+        host.stats_panel.update_stats(conversation)
+        host.conv_service.save(conversation)
+
+        try:
+            conversations = host.conv_service.list_all()
+            host.sidebar.update_conversations(conversations)
+            host.sidebar.select_conversation(conversation.id)
+        except Exception as exc:
+            logger.debug("Failed to refresh sidebar after explicit shell command: %s", exc)
+
+    def _ask_command_approval(self, message: str) -> bool:
+        reply = QMessageBox.question(
+            self._host,
+            "命令执行确认",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes

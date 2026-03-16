@@ -11,6 +11,11 @@ from utils.file_context import get_file_tree
 from core.config.schema import AppConfig
 from core.modes.manager import resolve_mode_config
 from core.modes.types import normalize_mode_slug
+from core.skills import (
+    SkillsManager,
+    check_skill_execution_availability,
+    resolve_skill_invocation_spec,
+)
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -26,8 +31,6 @@ DEFAULT_AGENT_TOOL_GUIDELINES = (
     "- `attempt_completion` is a built-in tool for finishing work; do not treat it as a skill or document name.\n"
     "- If another mode is a better fit, use `switch_mode`; if work should continue independently, use `new_task`."
 )
-
-
 def build_mode_profile_section(mode_slug: str, mode_cfg: Optional[Any]) -> str:
     lines = ["<mode_profile>", f"slug: {mode_slug}"]
 
@@ -70,7 +73,7 @@ def build_mode_workflow_guidance(mode_slug: str) -> str:
             "Switch to another mode once debugging is done and the remaining work is clearly implementation or planning.",
             "Call `attempt_completion` only after the root cause and fix state are explicit.",
         ],
-        "architect": [
+        "plan": [
             "Create and maintain a plan document as the primary artifact for architecture work.",
             "Use the todo list to track open design questions and decision checkpoints.",
             "Persist only confirmed constraints or decisions into memory.",
@@ -139,9 +142,67 @@ def resolve_base_system_prompt_text(
 def build_state_section(conversation: Conversation) -> str:
     try:
         state = conversation.get_state()
-        return state.to_prompt_view() or ""
+        return state.to_prompt_view(include_documents=False) or ""
     except Exception:
         return ""
+
+
+def _trim_prompt_block(value: str, *, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def build_session_document_sections(conversation: Conversation, mode_slug: str) -> list[str]:
+    try:
+        state = conversation.get_state()
+    except Exception:
+        return []
+
+    sections: list[str] = []
+    documents = getattr(state, "documents", {}) or {}
+    plan_doc = documents.get("plan")
+    memory_doc = documents.get("memory")
+
+    if plan_doc is not None and str(plan_doc.content or "").strip():
+        plan_lines = ["<current_plan>"]
+        plan_lines.append(_trim_prompt_block(plan_doc.content, max_chars=6000))
+        plan_lines.append("</current_plan>")
+        if mode_slug == "plan":
+            plan_lines.append(
+                "The plan document above is the primary artifact for this run. Refine it before completion and avoid implementation work in plan mode."
+            )
+        elif mode_slug in {"agent", "code", "debug", "orchestrator"}:
+            plan_lines.append(
+                "Use the current plan as the execution source of truth. Update it when scope, sequencing, or findings materially change."
+            )
+        sections.append("\n".join(plan_lines))
+
+    if memory_doc is not None and str(memory_doc.content or "").strip():
+        sections.append(
+            "\n".join(
+                [
+                    "<session_memory>",
+                    _trim_prompt_block(memory_doc.content, max_chars=3000),
+                    "</session_memory>",
+                ]
+            )
+        )
+
+    other_docs: list[str] = []
+    for name, doc in documents.items():
+        normalized = str(name or "").strip().lower()
+        if normalized in {"plan", "memory"}:
+            continue
+        content = str(getattr(doc, "content", "") or "").strip()
+        if not content:
+            continue
+        other_docs.append(f"- {name}: {_trim_prompt_block(content, max_chars=240)}")
+    if other_docs:
+        sections.append("<session_documents>\n" + "\n".join(other_docs) + "\n</session_documents>")
+
+    return sections
 
 
 def build_system_prompt(
@@ -213,6 +274,10 @@ def build_system_prompt(
         if state_section:
             parts.append(state_section)
 
+    document_sections = build_session_document_sections(conversation, mode_slug)
+    if document_sections:
+        parts.extend(document_sections)
+
     workflow_guidance = build_mode_workflow_guidance(mode_slug)
     if workflow_guidance:
         parts.append(workflow_guidance)
@@ -223,49 +288,79 @@ def build_system_prompt(
     if combined_custom:
         parts.append(f"## Custom Instructions\n{combined_custom}")
 
-    # Inject explicitly activated skills plus a small set of relevant auto-matched skills.
-    active_skills = (settings.get("active_skills") or [])
-    skill_names: list[str] = []
-    for raw_name in active_skills:
-        name = str(raw_name or "").strip().lower()
-        if name and name not in skill_names:
-            skill_names.append(name)
-
-    latest_user_query = ""
+    latest_skill_run: dict[str, Any] = {}
     for msg in reversed(getattr(conversation, "messages", []) or []):
         if getattr(msg, "role", "") != "user":
             continue
-        latest_user_query = str(getattr(msg, "content", "") or "").strip()
-        if latest_user_query:
-            break
+        metadata = getattr(msg, "metadata", {}) or {}
+        skill_run = metadata.get("skill_run") if isinstance(metadata, dict) else None
+        if isinstance(skill_run, dict):
+            latest_skill_run = skill_run
+        break
 
-    from core.skills import resolve_active_skills, suggest_skills_for_query
-    for skill in suggest_skills_for_query(
-        latest_user_query,
-        work_dir=getattr(conversation, "work_dir", ".") or ".",
-        limit=2,
-    ):
-        if skill.name not in skill_names:
-            skill_names.append(skill.name)
+    skill_manager = SkillsManager(getattr(conversation, "work_dir", ".") or ".")
+    available_skills = []
+    for skill in skill_manager.list_skills():
+        spec = resolve_skill_invocation_spec(skill)
+        if spec.user_invocable:
+            available_skills.append(skill)
+    if available_skills:
+        catalog_lines = ["<available_skills>"]
+        for skill in available_skills:
+            spec = resolve_skill_invocation_spec(skill)
+            attrs = [f'name="{skill.name}"']
+            description = str(skill.description or "").strip()
+            if description:
+                attrs.append(f'description="{description}"')
+            attrs.append(f'executor="{spec.executor}"')
+            arg_hint = str(skill.metadata.get("argument-hint") or "").strip()
+            if arg_hint:
+                attrs.append(f'argument_hint="{arg_hint}"')
+            if skill.tags:
+                attrs.append(f'tags="{", ".join(skill.tags)}"')
+            catalog_lines.append(f"<skill {' '.join(attrs)} />")
+        catalog_lines.append("</available_skills>")
+        catalog_lines.append(
+            "The catalog above is for progressive skill discovery. Do not assume a skill is active or callable unless the user explicitly invoked `/{skill-name}` in this turn. Skill names are not tool names."
+        )
+        parts.append("\n".join(catalog_lines))
 
-    if skill_names:
-        for skill in resolve_active_skills(
-            skill_names,
-            work_dir=getattr(conversation, "work_dir", ".") or ".",
-        ):
-            description = f' description="{skill.description}"' if skill.description else ""
-            parts.append(f'<skill name="{skill.name}"{description}>\n{skill.content}\n</skill>')
-
-    # Inject conversation summary at the end of the system prompt
-    try:
-        state = conversation.get_state()
-        if state.summary:
-            parts.append(
-                "<conversation-summary>\n"
-                f"{state.summary}\n"
-                "</conversation-summary>"
-            )
-    except Exception:
-        pass
+    latest_skill_name = str(latest_skill_run.get("name") or "").strip().lower()
+    loaded_skill = skill_manager.get(latest_skill_name) if latest_skill_name else None
+    if loaded_skill is not None:
+        spec = resolve_skill_invocation_spec(loaded_skill)
+        execution = check_skill_execution_availability(loaded_skill, tools)
+        resource_paths = skill_manager.list_resources(loaded_skill.name)
+        runtime_lines = ["<invoked_skill>"]
+        runtime_lines.append(f"name: {loaded_skill.name}")
+        runtime_lines.append(f"entrypoint: {loaded_skill.source}")
+        runtime_lines.append(f"mode: {spec.mode}")
+        runtime_lines.append(f"executor: {spec.executor}")
+        runtime_lines.append(f"execution_mode: {spec.execution_mode}")
+        runtime_lines.append(f"disable_model_invocation: {spec.disable_model_invocation}")
+        user_input = str(latest_skill_run.get("user_input") or "").strip()
+        if user_input:
+            runtime_lines.append(f"user_input: {user_input}")
+        if spec.preferred_cli:
+            runtime_lines.append(f"preferred_cli: {', '.join(spec.preferred_cli)}")
+        if spec.declared_tools:
+            runtime_lines.append(f"declared_tools: {', '.join(spec.declared_tools)}")
+        runtime_lines.append(f"status: {'executable' if execution.executable else 'unavailable'}")
+        if execution.concrete_tools:
+            runtime_lines.append(f"concrete_tools: {', '.join(execution.concrete_tools)}")
+        if execution.reason:
+            runtime_lines.append(f"reason: {execution.reason}")
+        if execution.missing_tools:
+            runtime_lines.append(f"missing_tools: {', '.join(execution.missing_tools)}")
+        if resource_paths:
+            runtime_lines.append(f"resource_paths: {', '.join(resource_paths[:20])}")
+        runtime_lines.append("rule: Before taking action for an explicitly invoked skill, call `load_skill` to read its SKILL.md entrypoint.")
+        runtime_lines.append("rule: If the loaded skill references supporting files, call `read_skill_resource` only for the specific files you need.")
+        if execution.executable:
+            runtime_lines.append("rule: Use only concrete tool names that appear in <available_tools> or concrete_tools. Skill names are not tool names.")
+        else:
+            runtime_lines.append("rule: Do not invent missing tools. If execution is unavailable, explain the missing capability and stop instead of probing repeatedly.")
+        runtime_lines.append("</invoked_skill>")
+        parts.append("\n".join(runtime_lines))
 
     return "\n\n".join([p for p in parts if isinstance(p, str) and p.strip()]).strip()

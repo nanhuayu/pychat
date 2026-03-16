@@ -289,6 +289,8 @@ class Conversation:
                 for tc in msg.tool_calls:
                     if tc.get('id') == message.tool_call_id:
                         tc['result'] = message.content
+                        if message.images:
+                            tc['result_images'] = list(message.images)
                         # If the tool execution updated SessionState, apply it immediately.
                         # This keeps UI panels (e.g., tasks) consistent even when tool messages are merged.
                         if message.state_snapshot and isinstance(message.state_snapshot, dict):

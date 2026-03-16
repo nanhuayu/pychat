@@ -172,6 +172,16 @@ class MessageTextEdit(QTextEdit):
             return
 
         cursor = self.textCursor()
+        command_result = self._command_registry.get_command_candidates(
+            self.toPlainText(),
+            cursor.position(),
+            self._mention_context_provider(),
+        )
+        if command_result:
+            query, candidates = command_result
+            self._show_completer(query, candidates)
+            return
+
         result = self._command_registry.get_mention_candidates(
             self.toPlainText(),
             cursor.position(),

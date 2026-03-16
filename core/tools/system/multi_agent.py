@@ -50,7 +50,7 @@ class NewTaskTool(BaseTool):
             "properties": {
                 "mode": {
                     "type": "string",
-                    "description": "Mode slug for the sub-task (e.g. 'code', 'architect', 'debug')",
+                    "description": "Mode slug for the sub-task (e.g. 'code', 'plan', 'debug')",
                 },
                 "message": {
                     "type": "string",
@@ -139,7 +139,7 @@ class AttemptCompletionTool(BaseTool):
         if command:
             context.state["_completion_command"] = command
 
-        return ToolResult(f"Task completed: {result}")
+        return ToolResult("Completion acknowledged.")
 
 
 class SwitchModeTool(BaseTool):
@@ -171,7 +171,7 @@ class SwitchModeTool(BaseTool):
             "properties": {
                 "mode": {
                     "type": "string",
-                    "description": "Target mode slug (e.g. 'code', 'architect', 'ask')",
+                    "description": "Target mode slug (e.g. 'code', 'plan', 'ask')",
                 },
                 "reason": {
                     "type": "string",

@@ -12,9 +12,12 @@ from core.commands.types import CommandAction, CommandResult
 
 def cmd_help(args: str, ctx: Dict[str, Any], *, list_commands) -> str:
     """Show available commands."""
-    lines = ["**Available commands** (`/` and `#` both supported):"]
+    lines = ["**Available commands** (`/` only):"]
     for cmd in list_commands():
-        lines.append(f"  `/{cmd.name}` / `#{cmd.name}` — {cmd.description}")
+        usage = (getattr(cmd.presentation, "usage", "") or f"/{cmd.name}").strip()
+        lines.append(f"  `{usage}` — {cmd.description}")
+    lines.append("")
+    lines.append("Use `/{skill-name}` to run a skill directly. Use `!<shell command>` for explicit shell execution. Use `#path/to/file` for file references.")
     return "\n".join(lines)
 
 
@@ -27,7 +30,7 @@ def cmd_mode(args: str, ctx: Dict[str, Any]) -> CommandResult:
         current = ctx.get("current_mode", "chat")
         return CommandResult(
             action=CommandAction.DISPLAY,
-            display_text=f"Current mode: **{current}**. Usage: `/mode <slug>`, `#mode <slug>`, or `@mode:<slug>` (e.g. `@mode:code`).",
+            display_text=f"Current mode: **{current}**. Usage: `/mode <slug>`.",
         )
     return CommandResult(action=CommandAction.MODE_SWITCH, data=args.strip())
 
@@ -47,34 +50,29 @@ def cmd_clear(args: str, ctx: Dict[str, Any]) -> CommandResult:
     return CommandResult(action=CommandAction.CLEAR)
 
 
-def cmd_skill(args: str, ctx: Dict[str, Any]) -> CommandResult:
+def cmd_skills(args: str, ctx: Dict[str, Any]) -> CommandResult:
     from core.skills import SkillsManager
     from core.config import get_global_subdir
+
     mgr = SkillsManager(str(ctx.get("work_dir") or "."))
-    if not args.strip():
-        skills = mgr.list_skills()
-        if not skills:
-            return CommandResult(
-                action=CommandAction.DISPLAY,
-                display_text=(
-                    "No skills found. Add a legacy `.md` skill or a directory skill with `SKILL.md` to "
-                    f"`{get_global_subdir('skills')}` or `.pychat/skills/`."
-                ),
-            )
-        lines = ["**Available skills:**"]
-        for s in skills:
-            tags = f" [{', '.join(s.tags)}]" if s.tags else ""
-            desc = f" — {s.description}" if s.description else ""
-            lines.append(f"  `{s.name}`{tags}{desc} ({s.source})")
-        return CommandResult(action=CommandAction.DISPLAY, display_text="\n".join(lines))
-    name = args.strip().lower()
-    skill = mgr.get(name)
-    if not skill:
+    skills = mgr.list_skills()
+    if not skills:
         return CommandResult(
             action=CommandAction.DISPLAY,
-            display_text=f"Skill `{name}` not found. Use `/skill` or `#skill` to list available skills.",
+            display_text=(
+                "No skills found. Add a legacy `.md` skill or a directory skill with `SKILL.md` to "
+                f"`{get_global_subdir('skills')}` or `.pychat/skills/`."
+            ),
         )
-    return CommandResult(action=CommandAction.SKILL, data=name)
+
+    lines = ["**Available skills:**"]
+    for s in skills:
+        tags = f" [{', '.join(s.tags)}]" if s.tags else ""
+        desc = f" — {s.description}" if s.description else ""
+        lines.append(f"  `/{s.name}`{tags}{desc}")
+    lines.append("")
+    lines.append("Run a skill directly with `/{skill-name} <your request>`.")
+    return CommandResult(action=CommandAction.DISPLAY, display_text="\n".join(lines))
 
 
 def cmd_plan(args: str, ctx: Dict[str, Any]) -> str:

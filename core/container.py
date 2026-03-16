@@ -18,6 +18,7 @@ from typing import Optional
 from services.storage_service import StorageService
 from services.provider_service import ProviderService
 from services.conversation_service import ConversationService
+from services.command_service import CommandService
 from services.context_service import ContextService
 from services.skill_service import SkillService
 from core.config import load_app_config
@@ -49,6 +50,7 @@ class AppContainer:
         # -- Service layer
         self.provider_service = ProviderService()
         self.conv_service = ConversationService(self.storage)
+        self.command_service = CommandService()
         self.context_service = ContextService(self.client)
         self.skill_service = SkillService()
         self.command_registry = CommandRegistry()

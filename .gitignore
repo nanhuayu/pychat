@@ -8,6 +8,9 @@ temp/
 temp_*
 debug/
 
+.pychat/
+.vscode/
+
 # Byte-compiled / optimized
 __pycache__/
 *.py[cod]

@@ -6,7 +6,7 @@ from MainWindow, reducing it by ~300 lines.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 from PyQt6.QtWidgets import QMessageBox
 
@@ -41,7 +41,7 @@ class MessagePresenter:
     # Send
     # ------------------------------------------------------------------
 
-    def send(self, content: str, images: list) -> None:
+    def send(self, content: str, images: list, metadata: Optional[dict[str, Any]] = None) -> None:
         host = self._host
 
         if not host.current_conversation:
@@ -73,8 +73,10 @@ class MessagePresenter:
         host.stats_panel.update_stats(host.current_conversation)
         host.conv_service.save(host.current_conversation)
 
+        extra_metadata = dict(metadata or {})
+
         # Empty input: if last message is user, just re-stream
-        if not content and not images:
+        if not content and not images and not extra_metadata:
             if (
                 host.current_conversation.messages
                 and host.current_conversation.messages[-1].role == "user"
@@ -83,6 +85,8 @@ class MessagePresenter:
             return
 
         user_message = Message(role="user", content=content, images=images)
+        if extra_metadata:
+            user_message.metadata.update(extra_metadata)
         user_message.metadata.update(
             {
                 "provider_id": provider_id,
@@ -134,32 +138,30 @@ class MessagePresenter:
         except Exception as e:
             logger.debug("Failed to load retry config: %s", e)
 
+        skill_run = self._get_latest_skill_run_metadata(conversation)
+
         try:
-            policy = host.input_area.build_run_policy(
-                enable_thinking=enable_thinking, retry_config=retry_cfg
+            policy = self._build_request_policy(
+                conversation=conversation,
+                enable_thinking=enable_thinking,
+                retry_cfg=retry_cfg,
+                skill_run=skill_run,
             )
         except Exception as e:
-            logger.warning("Failed to build run policy from input area: %s", e)
+            logger.warning("Failed to build run policy: %s", e)
+            from core.task.types import RunPolicy
+
+            policy = RunPolicy(mode="chat", enable_thinking=bool(enable_thinking))
+
+        if skill_run is None:
             try:
-                policy = AgentService.build_run_policy(
-                    conversation=conversation,
-                    app_settings=host._app_settings,
-                    enable_thinking=enable_thinking,
-                )
+                if conversation is not None:
+                    conversation.mode = (
+                        str(getattr(policy, "mode", "") or "")
+                        or (conversation.mode or "chat")
+                    )
             except Exception as e:
-                logger.warning("Failed to build fallback run policy: %s", e)
-                from core.task.types import RunPolicy
-
-                policy = RunPolicy(mode="chat", enable_thinking=bool(enable_thinking))
-
-        try:
-            if conversation is not None:
-                conversation.mode = (
-                    str(getattr(policy, "mode", "") or "")
-                    or (conversation.mode or "chat")
-                )
-        except Exception as e:
-            logger.debug("Failed to sync conversation mode from policy: %s", e)
+                logger.debug("Failed to sync conversation mode from policy: %s", e)
 
         state = host.message_runtime.start(
             provider,
@@ -174,6 +176,57 @@ class MessagePresenter:
             host.chat_view.start_streaming_response(model=state.model)
             host.chat_view.restore_streaming_state("", "")
         host._sync_input_enabled()
+
+    def _build_request_policy(
+        self,
+        *,
+        conversation: Conversation,
+        enable_thinking: bool,
+        retry_cfg,
+        skill_run: Optional[dict[str, Any]],
+    ):
+        host = self._host
+        from core.task.builder import build_run_policy
+
+        if skill_run:
+            skill_name = str(skill_run.get("name") or "").strip().lower()
+            work_dir = getattr(conversation, "work_dir", ".") or "."
+            spec = host.skill_service.get_invocation_spec(skill_name, work_dir=work_dir)
+            if spec is not None:
+                return build_run_policy(
+                    mode_slug=spec.mode,
+                    enable_thinking=bool(enable_thinking),
+                    enable_search=spec.enable_search,
+                    enable_mcp=spec.enable_mcp,
+                    mode_manager=getattr(host.input_area, "_mode_manager", None),
+                    retry_config=retry_cfg,
+                )
+
+        try:
+            return host.input_area.build_run_policy(
+                enable_thinking=enable_thinking, retry_config=retry_cfg
+            )
+        except Exception as e:
+            logger.warning("Failed to build run policy from input area: %s", e)
+            return AgentService.build_run_policy(
+                conversation=conversation,
+                app_settings=host._app_settings,
+                enable_thinking=enable_thinking,
+            )
+
+    @staticmethod
+    def _get_latest_skill_run_metadata(
+        conversation: Optional[Conversation],
+    ) -> Optional[dict[str, Any]]:
+        for msg in reversed(getattr(conversation, "messages", []) or []):
+            if getattr(msg, "role", "") != "user":
+                continue
+            metadata = getattr(msg, "metadata", {}) or {}
+            skill_run = metadata.get("skill_run") if isinstance(metadata, dict) else None
+            if isinstance(skill_run, dict) and str(skill_run.get("name") or "").strip():
+                return skill_run
+            break
+        return None
 
     # ------------------------------------------------------------------
     # Streaming callbacks

@@ -1,10 +1,12 @@
 import json
+import mimetypes
 import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List
 
 from core.tools.base import BaseTool, ToolContext, ToolResult
+from utils.image_encoding import encode_image_file_to_data_url
 
 class LsTool(BaseTool):
     @property
@@ -95,7 +97,7 @@ class ReadFileTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Read a text file under the workspace. Supports line ranges (slice mode)."
+        return "Read a workspace file. Text files support line ranges; image files can be returned as multimodal content blocks."
 
     @property
     def category(self) -> str:
@@ -109,6 +111,7 @@ class ReadFileTool(BaseTool):
                 "path": {"type": "string", "description": "Workspace-relative file path"},
                 "start_line": {"type": "number", "description": "Optional start line (1-based, inclusive)"},
                 "end_line": {"type": "number", "description": "Optional end line (1-based, inclusive)"},
+                "mode": {"type": "string", "description": "Optional read mode: auto, text, or image. Default: auto"},
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -118,6 +121,7 @@ class ReadFileTool(BaseTool):
         path_str = str(arguments.get("path", "") or "").strip()
         start_line = arguments.get("start_line")
         end_line = arguments.get("end_line")
+        mode = str(arguments.get("mode", "auto") or "auto").strip().lower()
 
         if not path_str:
             return ToolResult("Missing 'path'", is_error=True)
@@ -131,11 +135,39 @@ class ReadFileTool(BaseTool):
             return ToolResult(f"Not a file: {file_path}", is_error=True)
 
         try:
+            file_size = file_path.stat().st_size
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+            is_image = str(mime_type or "").startswith("image/")
+
+            if mode in {"auto", "image"} and is_image:
+                if file_size > 20 * 1024 * 1024:
+                    return ToolResult("Image file too large (>20MB).", is_error=True)
+                image_url = encode_image_file_to_data_url(str(file_path))
+                if not image_url:
+                    return ToolResult(f"Read error: failed to encode image {file_path}", is_error=True)
+                rel_path = str(file_path.relative_to(Path(context.work_dir).resolve())).replace("\\", "/")
+                return ToolResult(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"Image file: {rel_path}\nMime-Type: {mime_type or 'image/png'}\nSize: {file_size} bytes",
+                        },
+                        {
+                            "type": "image",
+                            "mimeType": mime_type or "image/png",
+                            "data": image_url,
+                        },
+                    ]
+                )
+
+            if mode == "image" and not is_image:
+                return ToolResult(f"File is not an image: {file_path}", is_error=True)
+
             # Read entire file (Python handles buffering generally well for moderate files)
             # For massive files, we should optimize, but for now this is consistent with Roo Code logic
             # which often reads whole file then slices.
             # Roo Code has a limit of 10MB or so.
-            if file_path.stat().st_size > 10 * 1024 * 1024:
+            if file_size > 10 * 1024 * 1024:
                 return ToolResult("File too large (>10MB). Use grep or read specific lines.", is_error=True)
 
             text = file_path.read_text(encoding="utf-8", errors="replace")

@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional
 from models.conversation import Conversation, Message
 from models.provider import Provider
 
-from core.tools.base import ToolContext
+from core.tools.base import ToolContext, ToolResult
 from core.tools.manager import McpManager
 from core.task.types import RunPolicy
 
@@ -52,10 +52,6 @@ class ToolExecutor:
 
     def is_tool_allowed(self, tool_name: str, policy: RunPolicy) -> bool:
         """Check if tool is allowed by policy.
-
-        Args:
-            tool_name: Name of tool to check
-            policy: Execution policy
 
         Returns:
             True if tool is allowed
@@ -137,7 +133,7 @@ class ToolExecutor:
         allowed: bool,
         policy: RunPolicy,
         context: ToolContext,
-    ) -> str:
+    ) -> ToolResult:
         """Execute a tool with given arguments.
 
         Args:
@@ -148,10 +144,10 @@ class ToolExecutor:
             context: Tool context
 
         Returns:
-            Tool execution result as string
+            Tool execution result
         """
         if not allowed:
-            return (
+            return ToolResult(
                 f"Tool '{tool_name}' is disabled by current mode/settings. "
                 f"(enable_search={bool(policy.enable_search)}, enable_mcp={bool(policy.enable_mcp)})"
             )
@@ -162,7 +158,7 @@ class ToolExecutor:
             )
         except Exception as e:
             logger.error("Tool execution failed: %s(%s) - %s", tool_name, tool_args, e)
-            return f"Error executing tool {tool_name}: {e}"
+            return ToolResult(f"Error executing tool {tool_name}: {e}", is_error=True)
 
     def sync_state(self, conversation: Conversation, context: ToolContext) -> None:
         """Sync state from tool context back to conversation.

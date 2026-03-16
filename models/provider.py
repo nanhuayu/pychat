@@ -70,8 +70,9 @@ class Provider:
         """Get complete headers for API requests"""
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self.api_key}'
         }
+        if self.api_key:
+            headers['Authorization'] = f'Bearer {self.api_key}'
         headers.update(self.custom_headers)
         return headers
 

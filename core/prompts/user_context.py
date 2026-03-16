@@ -1,12 +1,8 @@
-"""Inject structured context into user messages.
+"""Helpers for structured runtime context sections.
 
-Follows the vscode agent pattern: environment/workspace/conversation-summary
-are wrapped in XML tags and prepended to the **first user message** (or to
-each user message, configurable).
-
-This replaces the old approach of embedding environment info in the system
-prompt — moving it to user messages keeps the system prompt focused on role
-definition and rules, while giving the LLM concrete workspace awareness.
+The primary request path now assembles environment, summary, and recent
+history as separate first-class messages. The legacy inject/wrap helpers are
+kept for compatibility and for normalizing older persisted messages.
 """
 from __future__ import annotations
 

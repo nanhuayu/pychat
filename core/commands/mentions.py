@@ -1,8 +1,7 @@
 """Inline mention helpers.
 
-Supports ``#`` file references and ``@`` symbol mentions such as tools and modes.
-Parsing and resolution live in Core so the UI only needs to render suggestions
-and react to a selection.
+Supports ``#`` file references. Slash command completion is handled outside of
+the inline mention system.
 """
 from __future__ import annotations
 
@@ -23,8 +22,7 @@ class MentionKind(str, Enum):
     """Supported inline mention kinds."""
 
     FILE = "file"
-    TOOL = "tool"
-    MODE = "mode"
+    COMMAND = "command"
 
 
 @dataclass(frozen=True)

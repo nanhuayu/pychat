@@ -7,12 +7,42 @@ from typing import Any, Dict, List, Optional
 from models.conversation import Conversation, Message
 from models.provider import Provider
 from core.prompts.system import PromptManager
-from core.prompts.history import get_effective_history, apply_context_window
+from core.prompts.context_assembler import build_context_messages
+from core.prompts.history import apply_context_window
 from core.config import AppConfig, load_app_config
 
 from utils.image_encoding import encode_image_file_to_data_url
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_image_url(image: str) -> str:
+    if image.startswith("data:") or image.startswith(("http://", "https://")):
+        return image
+    return encode_image_file_to_data_url(image) or ""
+
+
+def _build_multimodal_content(text_content: Any, images: list[str], provider: Provider) -> Any:
+    if not images or not provider.supports_vision:
+        return text_content
+
+    content_list: list[dict[str, Any]] = []
+    if text_content:
+        content_list.append({"type": "text", "text": text_content})
+
+    for image in images:
+        if not isinstance(image, str) or not image:
+            continue
+        image_url = _normalize_image_url(image)
+        if image_url:
+            content_list.append({"type": "image_url", "image_url": {"url": image_url}})
+
+    return content_list or text_content
+
+
+def _build_message_content(msg: Message, provider: Provider) -> Any:
+    text_content = msg.summary if msg.summary else msg.content
+    return _build_multimodal_content(text_content, list(getattr(msg, "images", []) or []), provider)
 
 
 def select_base_messages(conversation: Conversation, *, app_config: AppConfig | None = None) -> List[Message]:
@@ -28,16 +58,26 @@ def select_base_messages(conversation: Conversation, *, app_config: AppConfig | 
         if getattr(getattr(cfg, "context", None), "compression_policy", None)
         else 3
     )
-    messages = get_effective_history(conversation.messages, keep_last_turns=keep_last_turns)
+    messages = build_context_messages(
+        conversation,
+        app_config=cfg,
+        keep_last_turns=keep_last_turns,
+        default_work_dir=getattr(conversation, "work_dir", ".") or ".",
+    )
+
+    synthetic_prefix: List[Message] = []
+    recent_history = list(messages)
+    while recent_history and bool(getattr(recent_history[0], "metadata", {}).get("synthetic")):
+        synthetic_prefix.append(recent_history.pop(0))
 
     settings = conversation.settings or {}
     max_ctx = settings.get("max_context_messages")
     if isinstance(max_ctx, int) and max_ctx > 0:
-        return apply_context_window(messages, max_ctx)
+        return synthetic_prefix + apply_context_window(recent_history, max_ctx)
 
     default_max_ctx = int(getattr(getattr(cfg, "context", None), "default_max_context_messages", 0) or 0)
     if default_max_ctx > 0:
-        return apply_context_window(messages, default_max_ctx)
+        return synthetic_prefix + apply_context_window(recent_history, default_max_ctx)
                 
     return messages
 
@@ -50,13 +90,13 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
     if not has_user:
         logger.warning("build_api_messages: no user messages found — context may be corrupted")
 
-    tool_result_by_id: Dict[str, str] = {}
+    tool_result_by_id: Dict[str, Any] = {}
     for m in messages:
         if m.role != "tool":
             continue
         if not m.tool_call_id:
             continue
-        content = m.summary if m.summary else m.content
+        content = _build_message_content(m, provider)
         if content is None:
             content = ""
         if m.tool_call_id not in tool_result_by_id:
@@ -66,32 +106,7 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
         if msg.role == "tool":
             continue
 
-        if msg.images and provider.supports_vision:
-            content_list: list[dict[str, Any]] = []
-            
-            # Use summary if available for text part
-            text_content = msg.summary if msg.summary else msg.content
-            
-            if text_content:
-                content_list.append({"type": "text", "text": text_content})
-
-            for image in msg.images:
-                if not isinstance(image, str) or not image:
-                    continue
-
-                if image.startswith("data:") or image.startswith(("http://", "https://")):
-                    image_url = image
-                else:
-                    image_url = encode_image_file_to_data_url(image) or ""
-
-                if image_url:
-                    content_list.append({"type": "image_url", "image_url": {"url": image_url}})
-
-            message_payload = {"role": msg.role, "content": content_list}
-        else:
-            # Use summary if available
-            content = msg.summary if msg.summary else msg.content
-            message_payload = {"role": msg.role, "content": content}
+        message_payload = {"role": msg.role, "content": _build_message_content(msg, provider)}
 
         if msg.tool_calls and msg.role == "assistant":
             tool_calls_with_results: List[Dict[str, Any]] = []
@@ -102,6 +117,9 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
                 if not tc_id:
                     continue
                 result = tc.get("result")
+                result_images = list(tc.get("result_images") or [])
+                if result_images:
+                    result = _build_multimodal_content(result, result_images, provider)
                 if result is None:
                     result = tool_result_by_id.get(tc_id)
                 if result is None:
@@ -117,18 +135,18 @@ def build_api_messages(messages: List[Message], provider: Provider) -> List[Dict
                 )
 
             if tool_calls_with_results:
-                for i, tc in enumerate(tool_calls_with_results):
-                    assistant_payload: Dict[str, Any] = {
-                        "role": "assistant",
-                        "content": message_payload.get("content") if i == 0 else None,
-                        "tool_calls": [tc["clean"]],
-                    }
+                assistant_payload: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": message_payload.get("content"),
+                    "tool_calls": [tc["clean"] for tc in tool_calls_with_results],
+                }
 
-                    if msg.thinking and i == 0:
-                        key = msg.metadata.get("thinking_key") or "reasoning_content"
-                        assistant_payload[key] = msg.thinking
+                if msg.thinking:
+                    key = msg.metadata.get("thinking_key") or "reasoning_content"
+                    assistant_payload[key] = msg.thinking
 
-                    api_messages.append(assistant_payload)
+                api_messages.append(assistant_payload)
+                for tc in tool_calls_with_results:
                     api_messages.append(
                         {
                             "role": "tool",

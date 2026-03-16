@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from core.tools.base import BaseTool, ToolContext, ToolResult
+from core.tools.naming import build_mcp_tool_name
 
 class McpProxyTool(BaseTool):
     """
@@ -10,8 +11,7 @@ class McpProxyTool(BaseTool):
         self.config = config
         self.real_tool_name = tool_name
         self._schema = schema
-        # Namespacing: mcp__{server}__{tool}
-        self._name = f"mcp__{config.name}__{tool_name}"
+        self._name = build_mcp_tool_name(config.name, tool_name)
 
     @property
     def name(self) -> str:

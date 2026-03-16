@@ -13,6 +13,7 @@ from models.provider import Provider
 from models.mcp_server import McpServerConfig
 from models.search_config import SearchConfig
 from services.importers import parse_imported_data
+from services.workspace_session_service import WorkspaceSessionService
 
 
 class StorageService:
@@ -28,6 +29,7 @@ class StorageService:
         self.mcp_servers_file = self.data_dir / 'mcp_servers.json'
         self.search_config_file = self.data_dir / 'search_config.json'
         self.settings_file = self.data_dir / 'settings.json'
+        self.workspace_sessions = WorkspaceSessionService()
         
         # Ensure directories exist
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -41,6 +43,7 @@ class StorageService:
             file_path = self.conversations_dir / f"{conversation.id}.json"
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(conversation.to_json())
+            self.workspace_sessions.save_snapshot(conversation)
             return True
         except Exception as e:
             print(f"Error saving conversation: {e}")
@@ -84,8 +87,17 @@ class StorageService:
         """Delete a conversation"""
         try:
             file_path = self.conversations_dir / f"{conversation_id}.json"
+            work_dir = None
+            if file_path.exists():
+                try:
+                    conversation = self.load_conversation(conversation_id)
+                    if conversation is not None:
+                        work_dir = str(getattr(conversation, 'work_dir', '') or '.')
+                except Exception:
+                    work_dir = None
             if file_path.exists():
                 file_path.unlink()
+                self.workspace_sessions.delete_snapshot(conversation_id, work_dir=work_dir)
                 return True
         except Exception as e:
             print(f"Error deleting conversation: {e}")

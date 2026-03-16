@@ -7,7 +7,7 @@ _WORKFLOW_REQUIRED_GROUPS = {
     "agent": {"modes"},
     "code": {"modes"},
     "debug": {"modes"},
-    "architect": {"modes"},
+    "plan": {"modes"},
     "orchestrator": {"modes"},
 }
 
@@ -22,6 +22,7 @@ _AGENT_AUTONOMY_SUFFIX = (
     "- When the task is fully complete, call `attempt_completion` to present your result.\n"
     "- Track progress with `manage_state` at key milestones.\n"
     "- Maintain a short working plan with `manage_document(name=\"plan\")` for multi-step work.\n"
+    "- If a current plan already exists, treat it as the execution source of truth instead of improvising a new workflow.\n"
     "- Store durable facts and confirmed decisions in memory instead of repeating them in chat.\n"
     "- If another mode is a better fit, call `switch_mode` or delegate via `new_task` instead of staying stuck in the wrong mode."
 )
@@ -30,6 +31,8 @@ _PLANNING_AUTONOMY_SUFFIX = (
     "\n\n"
     "## Workflow Requirements\n"
     "- Keep a concise plan in `manage_document(name=\"plan\")`.\n"
+    "- The plan document is the primary deliverable in this mode; refine it before concluding.\n"
+    "- Do not implement code changes in plan mode unless the user explicitly asks to leave planning and switch modes.\n"
     "- Keep todo state current with `manage_state`.\n"
     "- If another mode is better suited, call `switch_mode`; if work should proceed independently, use `new_task`.\n"
     "- When the planning or orchestration task is complete, call `attempt_completion` with a concise result."
@@ -58,8 +61,8 @@ DEFAULT_MODES: list[ModeConfig] = [
         source="builtin",
     ),
     ModeConfig(
-        slug="architect",
-        name="Architect",
+        slug="plan",
+        name="Plan",
         role_definition=(
             "You are an experienced technical leader who is inquisitive and an excellent planner. "
             "Your goal is to gather context and propose a detailed plan before implementation."

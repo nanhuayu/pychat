@@ -218,7 +218,7 @@ class LLMExecutor:
             allowed_groups = None
 
         try:
-            return await self._client.mcp_manager.get_all_tools(
+            return await self._client.tool_manager.get_all_tools(
                 include_search=bool(policy.enable_search),
                 include_mcp=bool(policy.enable_mcp),
                 prepared_queries=[prepared_query] if prepared_query else None,

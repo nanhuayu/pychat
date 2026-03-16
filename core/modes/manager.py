@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -8,6 +9,9 @@ from typing import Dict, List, Optional
 from core.config.io import get_user_modes_json_path, load_project_config
 from core.modes.defaults import get_builtin_mode_required_groups, get_default_modes
 from core.modes.types import GroupOptions, ModeConfig, normalize_mode_slug
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_tool_name_list(raw: object) -> tuple[str, ...]:
@@ -99,8 +103,8 @@ class ModeManager:
                 loaded = self._load_modes_json(user_path, source="global")
                 for m in loaded:
                     modes[m.slug] = m
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load global modes configuration: %s", exc)
 
         try:
             project = load_project_config(self.work_dir)
@@ -109,8 +113,8 @@ class ModeManager:
                     loaded = self._load_modes_json(Path("<project>"), source="project", raw_items=[item])
                     for m in loaded:
                         modes[m.slug] = m
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load project modes configuration: %s", exc)
 
         if "chat" not in modes:
             modes["chat"] = get_default_modes()[0]

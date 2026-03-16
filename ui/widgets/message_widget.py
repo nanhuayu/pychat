@@ -3,6 +3,7 @@ Message widget for displaying individual messages - Responsive layout
 """
 
 import json
+import logging
 import math
 from typing import List, Optional, Any
 
@@ -21,6 +22,9 @@ except ImportError:
 from models.conversation import Message
 from ui.dialogs.image_viewer import ImageViewerDialog
 from ui.utils.image_loader import load_pixmap
+
+
+logger = logging.getLogger(__name__)
 
 
 MARKDOWN_CSS = """
@@ -147,8 +151,8 @@ class MarkdownView(QTextBrowser):
         # Monitor document size changes
         try:
             doc.documentLayout().documentSizeChanged.connect(self._on_document_size_changed)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to connect markdown document size listener: %s", exc)
 
         self.set_markdown(text)
 
@@ -460,8 +464,8 @@ class MessageWidget(QFrame):
         try:
             ts = self.message.created_at.strftime('%m-%d %H:%M')
             self._add_badge(layout, ts)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to format message timestamp badge: %s", exc)
 
     def _add_badge(self, layout, text):
         label = QLabel(text)

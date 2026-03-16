@@ -165,8 +165,8 @@ async def parse_stream_response(
                 try:
                     log_fp.write("[JSONDecodeError]\n")
                     log_fp.flush()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to write JSON decode marker to stream log: %s", exc)
             continue
 
         if isinstance(chunk_data, dict) and chunk_data.get("error") is not None:
@@ -231,8 +231,8 @@ async def parse_stream_response(
         try:
             log_fp.write("\n===== END STREAM =====\n")
             log_fp.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to finalize stream log file: %s", exc)
 
     # Finalize tool calls
     if tool_calls_buffer:

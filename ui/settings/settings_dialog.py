@@ -9,6 +9,7 @@ Notes:
 
 from __future__ import annotations
 
+import logging
 from typing import List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
@@ -45,6 +46,9 @@ from ui.settings.pages import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 def create_emoji_icon(emoji: str, size: int = 20) -> QIcon:
     """Render emoji as icon, keeping alignment consistent on Windows."""
     pixmap = QPixmap(size, size)
@@ -66,6 +70,8 @@ class SettingsDialog(QDialog):
         self,
         providers: List[Provider],
         current_settings: dict | None = None,
+        provider_service: ProviderService | None = None,
+        storage_service: StorageService | None = None,
         parent=None,
         work_dir: str | None = None,
     ):
@@ -74,8 +80,8 @@ class SettingsDialog(QDialog):
         self.current_settings = current_settings or {}
         self.work_dir = str(work_dir or "")
 
-        self.provider_service = ProviderService()
-        self.storage = StorageService()
+        self.provider_service = provider_service or ProviderService()
+        self.storage = storage_service or StorageService()
         self.search_config = self.storage.load_search_config()
         self._app_config = AppConfig.from_dict(self.current_settings)
 
@@ -94,8 +100,8 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(800, 560)
         try:
             self.resize(850, 600)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to resize settings dialog: %s", exc)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -149,7 +155,7 @@ class SettingsDialog(QDialog):
             prompt_optimizer_model=str(getattr(self._app_config, "prompt_optimizer_model", "") or ""),
         )
         self.agent_page = AgentPermissionsPage(self._app_config.permissions, retry=self._app_config.retry)
-        self.mcp_page = McpPage()
+        self.mcp_page = McpPage(storage_service=self.storage)
         self.search_page = SearchPage(self.search_config)
         self.appearance_page = AppearancePage(
             theme=self._app_config.theme,
@@ -190,8 +196,8 @@ class SettingsDialog(QDialog):
 
         try:
             self.models_page.providers_changed.connect(self.providers_changed)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to connect providers_changed signal in settings dialog: %s", exc)
 
     def _change_page(self, index: int) -> None:
         self.content.setCurrentIndex(int(index))
@@ -201,19 +207,19 @@ class SettingsDialog(QDialog):
             if not self.modes_page.save_to_disk():
                 QMessageBox.warning(self, "模式配置无效", "请先修正 modes.json 后再保存。")
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to persist modes configuration from settings dialog: %s", exc)
 
         try:
             self.providers = self.models_page.get_providers()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to collect providers from settings dialog: %s", exc)
 
         try:
             self.search_config = self.search_page.collect()
             self.storage.save_search_config(self.search_config)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to collect or save search configuration: %s", exc)
 
         try:
             self._appearance_patch = dict(self.appearance_page.collect() or {})
@@ -228,7 +234,8 @@ class SettingsDialog(QDialog):
         try:
             perms = self.agent_page.collect()
             self._auto_approve_patch = perms.to_dict()
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to collect agent permission settings: %s", exc)
             self._auto_approve_patch = {}
 
         try:

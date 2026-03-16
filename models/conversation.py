@@ -1,4 +1,5 @@
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
@@ -7,6 +8,9 @@ import json
 
 if TYPE_CHECKING:
     from models.state import SessionState
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -296,13 +300,13 @@ class Conversation:
                         if message.state_snapshot and isinstance(message.state_snapshot, dict):
                             try:
                                 self._state_dict = message.state_snapshot.copy()
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.debug("Failed to copy merged tool state snapshot: %s", exc)
                             # Attach checkpoint for rollback on the triggering assistant message.
                             try:
                                 msg.state_snapshot = message.state_snapshot
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.debug("Failed to attach merged tool state snapshot to assistant message: %s", exc)
                         self.updated_at = datetime.now()
                         return True
         return False

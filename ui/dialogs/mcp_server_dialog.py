@@ -100,9 +100,9 @@ class McpServerEditDialog(QDialog):
 
 
 class McpSettingsWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, storage_service: Optional[StorageService] = None, parent=None):
         super().__init__(parent)
-        self.storage = StorageService()
+        self.storage = storage_service or StorageService()
         self.servers = self.storage.load_mcp_servers()
         self.setup_ui()
 

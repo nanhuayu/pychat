@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import uuid
 from typing import Optional
@@ -12,9 +13,12 @@ from models.provider import Provider
 from models.streaming import ConversationStreamState
 
 from core.llm.client import LLMClient
-from core.tools.manager import McpManager
+from core.tools.manager import ToolManager
 from core.task.task import Task
 from core.task.types import RunPolicy, TaskResult, TaskStatus, TaskEvent, TaskEventKind
+
+
+logger = logging.getLogger(__name__)
 
 
 class MessageRuntime(QObject):
@@ -42,11 +46,11 @@ class MessageRuntime(QObject):
     _raw_error = pyqtSignal(str, str, str)
     _raw_retry = pyqtSignal(str, str, str)
 
-    def __init__(self, client: LLMClient, mcp_manager: Optional[McpManager] = None, parent: Optional[QObject] = None):
+    def __init__(self, client: LLMClient, tool_manager: Optional[ToolManager] = None, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._client = client
-        self._mcp_manager = mcp_manager or client.mcp_manager
-        self._engine = Task(client=self._client, mcp_manager=self._mcp_manager)
+        self._tool_manager = tool_manager or client.tool_manager
+        self._engine = Task(client=self._client, tool_manager=self._tool_manager)
 
         self._streams: dict[str, ConversationStreamState] = {}
         self._last_request_id: dict[str, str] = {}
@@ -137,8 +141,8 @@ class MessageRuntime(QObject):
                 loop.run_until_complete(loop.shutdown_asyncgens())
                 try:
                     loop.run_until_complete(loop.shutdown_default_executor())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to shutdown runtime default executor: %s", exc)
                 loop.close()
 
             except Exception as e:
@@ -169,8 +173,8 @@ class MessageRuntime(QObject):
         if state:
             try:
                 state.visible_text += token
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to append visible streaming token: %s", exc)
         self.token_received.emit(conversation_id, request_id, token)
 
     def _on_raw_thinking(self, conversation_id: str, request_id: str, thinking: str) -> None:
@@ -180,8 +184,8 @@ class MessageRuntime(QObject):
         if state:
             try:
                 state.thinking_text += thinking
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to append thinking streaming token: %s", exc)
         self.thinking_received.emit(conversation_id, request_id, thinking)
 
     def _on_raw_step(self, conversation_id: str, request_id: str, message: Message) -> None:
@@ -196,8 +200,8 @@ class MessageRuntime(QObject):
                 if state:
                     state.visible_text = ""
                     state.thinking_text = ""
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to reset streaming buffers after assistant step: %s", exc)
 
         self.response_step.emit(conversation_id, request_id, message)
 
@@ -207,8 +211,8 @@ class MessageRuntime(QObject):
         # Cleanup live state
         try:
             self._streams.pop(conversation_id, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to clear live stream state on completion: %s", exc)
         self.response_complete.emit(conversation_id, request_id, message)
 
     def _on_raw_error(self, conversation_id: str, request_id: str, error: str) -> None:
@@ -216,8 +220,8 @@ class MessageRuntime(QObject):
             return
         try:
             self._streams.pop(conversation_id, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to clear live stream state on error: %s", exc)
         self.response_error.emit(conversation_id, request_id, error)
 
     def _on_raw_retry(self, conversation_id: str, request_id: str, detail: str) -> None:

@@ -1,4 +1,4 @@
-"""MCP service manager with persistent conversation-scoped sessions."""
+"""Unified tool manager with persistent conversation-scoped MCP sessions."""
 
 import logging
 import sys
@@ -24,8 +24,8 @@ from services.storage_service import StorageService
 from services.search_service import SearchService
 
 from core.tools.registry import ToolRegistry
-from core.tools.proxies import McpProxyTool
-from core.tools.naming import MCP_TOOL_PUBLIC_PREFIX, is_mcp_tool_name, parse_mcp_tool_name
+from core.tools.mcp.proxies import McpProxyTool
+from core.tools.mcp.naming import MCP_TOOL_PUBLIC_PREFIX, is_mcp_tool_name, parse_mcp_tool_name
 from core.tools.system.search import WebSearchTool
 
 # System Tools
@@ -68,9 +68,10 @@ class _PersistentMcpSession:
         await future
         await self.task
 
-class McpManager:
-    """MCP service manager.
+class ToolManager:
+    """Unified tool manager.
 
+    Owns built-in tools, search tools, and MCP-backed tools.
     Lifecycle is managed by ``AppContainer`` — do not instantiate directly
     outside of the container or ``LLMClient`` fallback path.
     """
@@ -448,12 +449,12 @@ class McpManager:
         finally:
             try:
                 loop.run_until_complete(loop.shutdown_asyncgens())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to shutdown async generators on MCP loop exit: %s", exc)
             try:
                 loop.run_until_complete(loop.shutdown_default_executor())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to shutdown default executor on MCP loop exit: %s", exc)
             loop.close()
 
     async def _run_on_mcp_loop(self, coro: Any) -> Any:

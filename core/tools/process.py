@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import locale
+import logging
 import os
 import re
 import subprocess
@@ -11,6 +12,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
+
+
+logger = logging.getLogger(__name__)
 
 
 _DANGEROUS_PATTERNS = [
@@ -92,8 +96,10 @@ def decode_subprocess_output(data: object) -> str:
             if enc.startswith("utf-8") and "\x00" in text and _looks_like_utf16(raw):
                 continue
             return text
-        except Exception:
-            pass
+        except UnicodeDecodeError:
+            continue
+        except Exception as exc:
+            logger.debug("Unexpected subprocess decode failure for encoding %s: %s", enc, exc)
     return raw.decode("utf-8", errors="replace")
 
 
@@ -282,8 +288,8 @@ class BackgroundProcessManager:
             try:
                 record.log_handle.flush()
                 record.log_handle.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to close background process log handle %s: %s", record.process_id, exc)
             record.log_handle = None
 
     def _snapshot(self, record: _BackgroundProcessRecord) -> BackgroundProcessSnapshot:

@@ -21,7 +21,7 @@ from core.skills import (
     check_skill_execution_availability,
     resolve_skill_invocation_spec,
 )
-from core.tools.naming import build_mcp_tool_name, parse_mcp_tool_name, tool_names_match
+from core.tools.mcp.naming import build_mcp_tool_name, parse_mcp_tool_name, tool_names_match
 from core.tools.process import decode_subprocess_output
 from core.tools.system.filesystem import ReadFileTool
 from core.tools.system.skills import LoadSkillTool, ReadSkillResourceTool
@@ -508,7 +508,7 @@ class SkillRuntimeTests(unittest.TestCase):
         self.assertEqual("Plan", mode.name)
 
     def test_switch_mode_rebuilds_target_mode_defaults(self) -> None:
-        task = Task(client=object(), mcp_manager=object())
+        task = Task(client=object(), tool_manager=object())
         conversation = Conversation(work_dir=".", mode="plan")
         current_policy = RunPolicy(
             mode="plan",
@@ -530,7 +530,7 @@ class SkillRuntimeTests(unittest.TestCase):
         self.assertTrue(next_policy.enable_mcp)
 
     def test_merge_subtask_state_carries_plan_back_to_parent(self) -> None:
-        task = Task(client=object(), mcp_manager=object())
+        task = Task(client=object(), tool_manager=object())
         parent = Conversation(work_dir=".", mode="orchestrator")
         child = Conversation(work_dir=".", mode="plan")
 
@@ -550,7 +550,7 @@ class SkillRuntimeTests(unittest.TestCase):
         self.assertEqual("important", merged_state.memory["repo_fact"])
 
     def test_build_completion_message_uses_completion_result(self) -> None:
-        task = Task(client=object(), mcp_manager=object())
+        task = Task(client=object(), tool_manager=object())
         conversation = Conversation(work_dir=".", mode="agent")
 
         msg = task._build_completion_message(

@@ -1,4 +1,8 @@
 import os
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 # Try to import pathspec for gitignore support
 try:
@@ -22,8 +26,8 @@ def get_file_tree(root_path: str, max_depth: int = 2) -> str:
         try:
             with open(gitignore_path, "r", encoding="utf-8") as f:
                 ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", f)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load .gitignore for file tree generation: %s", exc)
 
     # Default ignores (always applied)
     default_ignores = {

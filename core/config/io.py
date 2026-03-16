@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from core.config.schema import AppConfig, ProjectConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 _APP_CACHE: AppConfig | None = None
@@ -30,7 +34,8 @@ def _merge_directory(source: Path, target: Path) -> None:
             elif not destination.exists():
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(child, destination)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to migrate legacy config artifact %s -> %s: %s", child, destination, exc)
             continue
 
 
@@ -39,8 +44,8 @@ def _migrate_legacy_global_data(target_dir: Path) -> None:
     try:
         if legacy_dir.resolve() == target_dir.resolve():
             return
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to compare legacy and target config directories: %s", exc)
 
     if not legacy_dir.exists() or not legacy_dir.is_dir():
         return

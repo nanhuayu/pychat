@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import json
 import codecs
+import logging
 from typing import Any, AsyncIterator, Optional, TextIO
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -106,8 +110,8 @@ async def iter_sse_data_lines(
                 try:
                     log_fp.write(data + "\n")
                     log_fp.flush()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to write SSE debug chunk: %s", exc)
 
             yield data
 

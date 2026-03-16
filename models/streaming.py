@@ -7,8 +7,12 @@ Keeping them in models/ makes them easy to import from UI and services.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Optional
 import threading
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -25,5 +29,5 @@ class ConversationStreamState:
     def cancel(self) -> None:
         try:
             self.cancel_event.set()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to set conversation cancel event: %s", exc)

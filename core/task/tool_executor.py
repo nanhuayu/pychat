@@ -18,7 +18,7 @@ from models.conversation import Conversation, Message
 from models.provider import Provider
 
 from core.tools.base import ToolContext, ToolResult
-from core.tools.manager import McpManager
+from core.tools.manager import ToolManager
 from core.task.types import RunPolicy
 
 logger = logging.getLogger(__name__)
@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 class ToolExecutor:
     """Handles tool execution and state management."""
 
-    def __init__(self, mcp_manager: McpManager):
-        self._mcp_manager = mcp_manager
+    def __init__(self, tool_manager: ToolManager):
+        self._tool_manager = tool_manager
 
     def parse_tool_call(self, tool_call: dict) -> tuple[str, dict, Optional[str]]:
         """Parse tool call from LLM response.
@@ -63,7 +63,7 @@ class ToolExecutor:
             denylist = policy.tool_denylist
             if denylist is not None and tool_name in denylist:
                 return False
-            tool = self._mcp_manager.registry.get_tool(tool_name)
+            tool = self._tool_manager.registry.get_tool(tool_name)
             if tool_name == "builtin_web_search":
                 return bool(policy.enable_search)
             if tool is None:
@@ -153,7 +153,7 @@ class ToolExecutor:
             )
 
         try:
-            return await self._mcp_manager.execute_tool_with_context(
+            return await self._tool_manager.execute_tool_with_context(
                 tool_name, tool_args, context
             )
         except Exception as e:
@@ -181,8 +181,8 @@ class ToolExecutor:
             except Exception:
                 try:
                     conversation._state_dict = dict(synced)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to write fallback conversation state dict: %s", exc)
         except Exception as e:
             logger.warning("Failed to sync state: %s", e)
 

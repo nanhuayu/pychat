@@ -1,6 +1,7 @@
 """Custom text editor and completion popup extracted from input_area.py."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6.QtWidgets import QListWidget, QTextEdit
@@ -11,6 +12,9 @@ from core.commands import CommandRegistry
 from core.commands.mentions import MentionCandidate, MentionKind, MentionQuery
 from core.modes.manager import ModeManager
 from ui.utils.image_utils import extract_images_from_mime
+
+
+logger = logging.getLogger(__name__)
 
 
 class FileCompleterPopup(QListWidget):
@@ -115,8 +119,8 @@ class MessageTextEdit(QTextEdit):
         finally:
             try:
                 self.mode_combo.blockSignals(False)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to restore mode combo signals in text editor: %s", exc)
 
     def insertFromMimeData(self, source):
         try:
@@ -127,8 +131,8 @@ class MessageTextEdit(QTextEdit):
             if sources:
                 self.attachments_received.emit(sources)
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to extract pasted image attachments in text editor: %s", exc)
 
         super().insertFromMimeData(source)
 

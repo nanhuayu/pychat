@@ -108,7 +108,7 @@ class ModelsPage(QWidget):
             self.provider_list.addItem(ProviderListItem(p))
 
     def _add_provider(self) -> None:
-        dialog = ProviderDialog(parent=self)
+        dialog = ProviderDialog(parent=self, provider_service=self.provider_service)
         if dialog.exec():
             p = dialog.get_provider()
             self.providers.append(p)
@@ -119,7 +119,7 @@ class ModelsPage(QWidget):
         item = self.provider_list.currentItem()
         if not isinstance(item, ProviderListItem):
             return
-        dialog = ProviderDialog(item.provider, self)
+        dialog = ProviderDialog(item.provider, provider_service=self.provider_service, parent=self)
         if dialog.exec():
             updated = dialog.get_provider()
             try:

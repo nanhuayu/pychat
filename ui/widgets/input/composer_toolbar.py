@@ -1,10 +1,14 @@
 """Composer toolbar extracted from input_area.py."""
 from __future__ import annotations
 
+import logging
 from PyQt6.QtWidgets import (
     QComboBox, QHBoxLayout, QSizePolicy, QToolButton, QWidget,
 )
 from PyQt6.QtCore import pyqtSignal
+
+
+logger = logging.getLogger(__name__)
 
 
 class ComposerToolbar(QWidget):
@@ -93,8 +97,8 @@ class ComposerToolbar(QWidget):
         if is_streaming:
             try:
                 self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_MediaStop))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to set stop icon on composer toolbar: %s", exc)
             self.send_btn.setToolTip("停止生成")
             self.prompt_optimize_btn.setEnabled(False)
             self.mcp_toggle.setEnabled(False)
@@ -103,8 +107,8 @@ class ComposerToolbar(QWidget):
 
         try:
             self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_ArrowRight))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to set send icon on composer toolbar: %s", exc)
         self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
 
     def set_prompt_optimize_busy(self, busy: bool, *, is_streaming: bool) -> None:

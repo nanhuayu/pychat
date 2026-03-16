@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -19,6 +20,9 @@ from models.provider import Provider
 from core.modes.manager import ModeManager
 from core.prompts.system_builder import resolve_base_system_prompt_text
 from ui.utils.form_builder import FormSection
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationSettingsDialog(QDialog):
@@ -84,8 +88,8 @@ class ConversationSettingsDialog(QDialog):
             idx = self.mode_combo.findData(cur_slug)
             if idx >= 0:
                 self.mode_combo.setCurrentIndex(idx)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to restore conversation mode selection in settings dialog: %s", exc)
         self.mode_combo.blockSignals(False)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         model_sec.form.addRow("模式", self.mode_combo)

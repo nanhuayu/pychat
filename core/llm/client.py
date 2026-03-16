@@ -37,18 +37,20 @@ def _format_runtime_error(error: Exception) -> str:
 class LLMClient:
     """Handles chat interactions with LLM providers."""
 
-    def __init__(self, timeout: float | None = None, mcp_manager=None):
+    def __init__(self, timeout: float | None = None, tool_manager=None):
         if timeout is None:
             try:
                 timeout = float(load_app_config().llm_timeout_seconds)
-            except Exception:
+            except Exception as exc:
+                logger.debug("Failed to load timeout from app config, using default: %s", exc)
                 timeout = 600.0
         self.timeout = float(timeout)
-        if mcp_manager is not None:
-            self.mcp_manager = mcp_manager
+        if tool_manager is not None:
+            self.tool_manager = tool_manager
         else:
-            from core.tools.manager import McpManager
-            self.mcp_manager = McpManager()
+            from core.tools.manager import ToolManager
+
+            self.tool_manager = ToolManager()
 
     def set_timeout(self, timeout: float) -> None:
         try:
@@ -79,7 +81,8 @@ class LLMClient:
                 log_fp = open(debug_log_path, "a", encoding="utf-8")
                 log_fp.write(f"\n===== {datetime.now().isoformat(timespec='seconds')} START =====\n")
                 log_fp.flush()
-            except Exception:
+            except Exception as exc:
+                logger.debug("Failed to open debug log file %s: %s", debug_log_path, exc)
                 log_fp = None
 
         try:
@@ -96,13 +99,14 @@ class LLMClient:
                         prepared_query = (getattr(m, "content", "") or "").strip()
                         if prepared_query:
                             break
-            except Exception:
+            except Exception as exc:
+                logger.debug("Failed to derive prepared query from conversation: %s", exc)
                 prepared_query = ""
 
             if prepared_tools is not None:
                 tools = prepared_tools
             else:
-                tools = await self.mcp_manager.get_all_tools(
+                tools = await self.tool_manager.get_all_tools(
                     include_search=enable_search,
                     include_mcp=enable_mcp,
                     prepared_queries=[prepared_query] if prepared_query else None,
@@ -120,8 +124,8 @@ class LLMClient:
                     open(f"debug_request_{int(time.time())}.json", "w", encoding="utf-8").write(
                         json.dumps(request_body, ensure_ascii=False, indent=2)
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to write debug request snapshot: %s", exc)
 
             timeout_config = httpx.Timeout(self.timeout, connect=60.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
@@ -183,5 +187,5 @@ class LLMClient:
                 else (conversation.model or provider.default_model),
                 "thinking_key": msg.metadata.get("thinking_key", "reasoning_content"),
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to attach LLM response metadata: %s", exc)

@@ -4,12 +4,16 @@ Pure core helper (no Qt) — reusable by CLI/TUI.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from core.task.types import RetryPolicy, RunPolicy
 from core.modes.features import clamp_feature_flags, get_mode_feature_policy
 from core.modes.manager import ModeManager, resolve_mode_config
 from core.config.schema import RetryConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_run_policy(
@@ -46,8 +50,8 @@ def build_run_policy(
             enable_mcp = bool(fp.default_mcp)
         if enable_search is None:
             enable_search = bool(fp.default_search)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to derive default feature flags from mode policy: %s", exc)
 
     if enable_thinking is None:
         enable_thinking = True
@@ -65,7 +69,8 @@ def build_run_policy(
             enable_mcp=bool(enable_mcp),
             enable_search=bool(enable_search),
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to clamp feature flags from mode policy: %s", exc)
         enable_thinking = bool(enable_thinking)
         enable_search = bool(enable_search)
         enable_mcp = bool(enable_mcp)

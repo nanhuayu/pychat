@@ -22,10 +22,16 @@ class ProviderDialog(QDialog):
     
     models_updated = pyqtSignal(list)  # Emit when models are fetched
     
-    def __init__(self, provider: Optional[Provider] = None, parent=None):
+    def __init__(
+        self,
+        provider: Optional[Provider] = None,
+        *,
+        provider_service: Optional[ProviderService] = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.provider = provider or Provider()
-        self.provider_service = ProviderService()
+        self.provider_service = provider_service or ProviderService()
         self._setup_ui()
         self._load_provider()
     

@@ -41,19 +41,12 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Centralized dependency container
-        self._container = AppContainer()
-        self.storage = self._container.storage
-        self.client = self._container.client
-        self.provider_service = self._container.provider_service
-        self.mcp_manager = self._container.mcp_manager
-        self.command_registry = self._container.command_registry
-        self.command_service = self._container.command_service
-        self.message_runtime = MessageRuntime(self.client, mcp_manager=self.mcp_manager, parent=self)
-
-        # Service layer
-        self.conv_service = self._container.conv_service
-        self.context_service = self._container.context_service
-        self.skill_service = self._container.skill_service
+        self.services = AppContainer().services
+        self.message_runtime = MessageRuntime(
+            self.services.client,
+            tool_manager=self.services.tool_manager,
+            parent=self,
+        )
         
         self.providers: list[Provider] = []
         self.current_conversation: Optional[Conversation] = None
@@ -68,7 +61,7 @@ class MainWindow(QMainWindow):
         self.message_runtime.response_error.connect(self._on_response_error)
         self.message_runtime.retry_attempt.connect(self._on_retry_attempt)
 
-        self.prompt_optimizer = PromptOptimizer(self.client, parent=self)
+        self.prompt_optimizer = PromptOptimizer(self.services.client, parent=self)
         self.prompt_optimizer.optimize_started.connect(self._on_prompt_optimize_started)
         self.prompt_optimizer.optimize_complete.connect(self._on_prompt_optimize_complete)
         self.prompt_optimizer.optimize_error.connect(self._on_prompt_optimize_error)
@@ -118,7 +111,7 @@ class MainWindow(QMainWindow):
         self.chat_view.work_dir_changed.connect(self._on_work_dir_changed)
         
         self.input_area = InputArea(
-            command_registry=self.command_registry,
+            command_registry=self.services.command_registry,
             tool_schema_provider=self._get_input_available_tools,
         )
         self.input_area.message_sent.connect(self._send_message)
@@ -171,7 +164,7 @@ class MainWindow(QMainWindow):
         try:
             mode_slug = self.input_area.get_selected_mode_slug()
             mode = self.input_area._mode_manager.get(mode_slug)
-            return self.mcp_manager.registry.get_all_tool_schemas(
+            return self.services.tool_manager.registry.get_all_tool_schemas(
                 allowed_groups=mode.group_names(),
             )
         except Exception as e:
@@ -188,8 +181,8 @@ class MainWindow(QMainWindow):
     def _create_menu_bar(self):
         menubar = self.menuBar()
         menubar.clear()
-        compact_presentation = self.command_registry.get_menu_presentation("compact")
-        clear_presentation = self.command_registry.get_menu_presentation("clear")
+        compact_presentation = self.services.command_registry.get_menu_presentation("compact")
+        clear_presentation = self.services.command_registry.get_menu_presentation("clear")
         
         file_menu = menubar.addMenu("文件")
         conversation_menu = menubar.addMenu("会话")
@@ -286,18 +279,18 @@ class MainWindow(QMainWindow):
         self._refresh_menu_action_states()
     
     def _load_data(self):
-        self._app_settings = self.storage.load_settings() or {}
-        self.mcp_manager.update_permissions(self._app_settings)
+        self._app_settings = self.services.storage.load_settings() or {}
+        self.services.tool_manager.update_permissions(self._app_settings)
         self._apply_proxy()
         try:
-            self.client.set_timeout(float(self._app_settings.get("llm_timeout_seconds", 600.0) or 600.0))
+            self.services.client.set_timeout(float(self._app_settings.get("llm_timeout_seconds", 600.0) or 600.0))
         except Exception as e:
             logger.debug("Failed to sync LLM timeout from settings: %s", e)
 
-        self.providers = self.storage.load_providers()
+        self.providers = self.services.storage.load_providers()
         if not self.providers:
-            self.providers = self.provider_service.create_default_providers()
-            self.storage.save_providers(self.providers)
+            self.providers = self.services.provider_service.create_default_providers()
+            self.services.storage.save_providers(self.providers)
         
         self.input_area.set_providers(self.providers)
         try:
@@ -306,7 +299,7 @@ class MainWindow(QMainWindow):
             logger.debug("Failed to apply initial mode defaults: %s", e)
         self._sync_chat_header_from_input()
         
-        conversations = self.conv_service.list_all()
+        conversations = self.services.conv_service.list_all()
         self.sidebar.update_conversations(conversations)
 
         # Apply appearance settings that don't depend on QSS
@@ -334,14 +327,14 @@ class MainWindow(QMainWindow):
         # Persist user layout immediately
         try:
             self._app_settings['splitter_sizes'] = [int(x) for x in self.splitter.sizes()]
-            self.storage.save_settings(self._app_settings)
+            self.services.storage.save_settings(self._app_settings)
         except Exception as e:
             logger.debug("Failed to persist splitter layout: %s", e)
 
     def _on_chat_splitter_moved(self, pos: int, index: int):
         try:
             self._app_settings['chat_splitter_sizes'] = [int(x) for x in self.chat_splitter.sizes()]
-            self.storage.save_settings(self._app_settings)
+            self.services.storage.save_settings(self._app_settings)
         except Exception as e:
             logger.debug("Failed to persist chat splitter layout: %s", e)
 
@@ -379,7 +372,7 @@ class MainWindow(QMainWindow):
             TaskService.handle_ops(state, ops, current_seq)
             state.last_updated_seq = current_seq
             self.current_conversation.set_state(state)
-            self.conv_service.save(self.current_conversation)
+            self.services.conv_service.save(self.current_conversation)
         except Exception as e:
             logger.warning("Failed to apply task operations: %s", e)
             return
@@ -430,7 +423,7 @@ class MainWindow(QMainWindow):
             logger.debug("Failed to update stats panel: %s", e)
 
         try:
-            self.conv_service.save(self.current_conversation)
+            self.services.conv_service.save(self.current_conversation)
         except Exception as e:
             logger.warning("Failed to save conversation: %s", e)
 
@@ -441,7 +434,7 @@ class MainWindow(QMainWindow):
         if self.current_conversation:
             self.current_conversation.work_dir = path
             self.input_area.set_work_dir(path)
-            self.conv_service.save(self.current_conversation)
+            self.services.conv_service.save(self.current_conversation)
             # Maybe show a toast or status bar message?
     
     def _import_conversation(self, file_path: str):
@@ -497,7 +490,7 @@ class MainWindow(QMainWindow):
         provider_id = self.input_area.get_selected_provider_id()
         base_model = self.input_area.get_selected_model()
 
-        provider = self.conv_service.find_provider(self.providers, provider_id)
+        provider = self.services.conv_service.find_provider(self.providers, provider_id)
         if not provider:
             QMessageBox.warning(self, '错误', '请先在设置中配置服务商')
             return
@@ -557,7 +550,7 @@ class MainWindow(QMainWindow):
         )
         if dlg.exec():
             dlg.apply_to_conversation()
-            self.conv_service.save(self.current_conversation)
+            self.services.conv_service.save(self.current_conversation)
             self.stats_panel.update_stats(self.current_conversation)
 
             # Sync input area with updated provider/model
@@ -595,7 +588,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.debug("Failed to sync MCP/Search from conversation settings dialog: %s", e)
 
-            conversations = self.conv_service.list_all()
+            conversations = self.services.conv_service.list_all()
             self.sidebar.update_conversations(conversations)
             self.sidebar.select_conversation(self.current_conversation.id)
 
@@ -605,7 +598,7 @@ class MainWindow(QMainWindow):
         if self.current_conversation.settings is None:
             self.current_conversation.settings = {}
         self.current_conversation.settings['show_thinking'] = bool(enabled)
-        self.conv_service.save(self.current_conversation)
+        self.services.conv_service.save(self.current_conversation)
 
     def _on_conversation_mcp_changed(self, enabled: bool) -> None:
         if not self.current_conversation:
@@ -613,7 +606,7 @@ class MainWindow(QMainWindow):
         if self.current_conversation.settings is None:
             self.current_conversation.settings = {}
         self.current_conversation.settings['enable_mcp'] = bool(enabled)
-        self.conv_service.save(self.current_conversation)
+        self.services.conv_service.save(self.current_conversation)
 
     def _on_conversation_search_changed(self, enabled: bool) -> None:
         if not self.current_conversation:
@@ -621,7 +614,7 @@ class MainWindow(QMainWindow):
         if self.current_conversation.settings is None:
             self.current_conversation.settings = {}
         self.current_conversation.settings['enable_search'] = bool(enabled)
-        self.conv_service.save(self.current_conversation)
+        self.services.conv_service.save(self.current_conversation)
 
     def _on_conversation_mode_changed(self, mode_slug: str) -> None:
         if not self.current_conversation:
@@ -632,7 +625,7 @@ class MainWindow(QMainWindow):
         self.current_conversation.settings['show_thinking'] = bool(self.input_area.thinking_toggle.isChecked())
         self.current_conversation.settings['enable_mcp'] = bool(self.input_area.is_mcp_enabled())
         self.current_conversation.settings['enable_search'] = bool(self.input_area.is_search_enabled())
-        self.conv_service.save(self.current_conversation)
+        self.services.conv_service.save(self.current_conversation)
     
     def _on_response_step(self, conversation_id: str, request_id: str, message: Message):
         self._msg_presenter.on_response_step(conversation_id, request_id, message)
@@ -651,13 +644,13 @@ class MainWindow(QMainWindow):
         if not self.current_conversation:
             return
         conv = self.current_conversation
-        provider = self.conv_service.find_provider(self.providers, conv.provider_id)
+        provider = self.services.conv_service.find_provider(self.providers, conv.provider_id)
         if not provider:
             self.statusBar().showMessage("未找到对应的 Provider，无法压缩上下文", 3000)
             return
         try:
-            self.context_service.compact(conv, provider)
-            self.conv_service.save(conv)
+            self.services.context_service.compact(conv, provider)
+            self.services.conv_service.save(conv)
             self._load_conversation_messages()
             self.statusBar().showMessage("上下文已压缩", 3000)
         except Exception as e:
@@ -751,7 +744,11 @@ class MainWindow(QMainWindow):
             provider_index = 0
         
         from ui.dialogs.provider_dialog import ProviderDialog
-        dialog = ProviderDialog(provider, parent=self)
+        dialog = ProviderDialog(
+            provider,
+            provider_service=self.services.provider_service,
+            parent=self,
+        )
         dialog.setWindowTitle(f"配置服务商 - {provider.name if provider else '新建'}")
         if dialog.exec():
             updated_provider = dialog.get_provider()
@@ -759,7 +756,7 @@ class MainWindow(QMainWindow):
                 self.providers[provider_index] = updated_provider
             else:
                 self.providers.append(updated_provider)
-            self.storage.save_providers(self.providers)
+            self.services.storage.save_providers(self.providers)
             self.input_area.set_providers(self.providers)
             # Re-select the provider
             for i, p in enumerate(self.providers):
@@ -775,10 +772,17 @@ class MainWindow(QMainWindow):
             logger.debug("Failed to get work_dir for settings: %s", e)
             work_dir = ""
 
-        dialog = SettingsDialog(self.providers, current_settings=self._app_settings, parent=self, work_dir=work_dir)
+        dialog = SettingsDialog(
+            self.providers,
+            current_settings=self._app_settings,
+            provider_service=self.services.provider_service,
+            storage_service=self.services.storage,
+            parent=self,
+            work_dir=work_dir,
+        )
         if dialog.exec():
             self.providers = dialog.get_providers()
-            self.storage.save_providers(self.providers)
+            self.services.storage.save_providers(self.providers)
             self.input_area.set_providers(self.providers)
             
             self._app_settings['show_stats'] = dialog.get_show_stats()
@@ -809,14 +813,14 @@ class MainWindow(QMainWindow):
 
             self._apply_proxy()
             try:
-                self.client.set_timeout(float(self._app_settings.get('llm_timeout_seconds', 600.0) or 600.0))
+                self.services.client.set_timeout(float(self._app_settings.get('llm_timeout_seconds', 600.0) or 600.0))
             except Exception as e:
                 logger.debug("Failed to apply updated LLM timeout: %s", e)
             
-            # Apply updated permissions to McpManager immediately
-            self.mcp_manager.update_permissions(self._app_settings)
+            # Apply updated permissions to ToolManager immediately.
+            self.services.tool_manager.update_permissions(self._app_settings)
 
-            self.storage.save_settings(self._app_settings)
+            self.services.storage.save_settings(self._app_settings)
 
             # Refresh core-level settings cache (so PromptManager/request builder picks up changes without restart)
             try:
@@ -832,7 +836,7 @@ class MainWindow(QMainWindow):
     def _toggle_stats_panel(self, visible: bool):
         self.stats_panel.setVisible(visible)
         self._app_settings['show_stats'] = bool(visible)
-        self.storage.save_settings(self._app_settings)
+        self.services.storage.save_settings(self._app_settings)
     
     def _show_about(self):
         QMessageBox.about(
@@ -852,7 +856,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         try:
-            asyncio.run(self.mcp_manager.shutdown())
+            asyncio.run(self.services.tool_manager.shutdown())
         except Exception as e:
             logger.debug("Failed to shutdown MCP sessions on exit: %s", e)
         super().closeEvent(event)

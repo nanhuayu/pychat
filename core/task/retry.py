@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from enum import Enum
 from typing import Optional
 
 from core.task.types import RetryPolicy
+
+
+logger = logging.getLogger(__name__)
 
 
 class ErrorKind(str, Enum):
@@ -100,8 +104,8 @@ async def retry_with_backoff(
             if on_retry:
                 try:
                     on_retry(attempt + 1, delay, str(exc))
-                except Exception:
-                    pass
+                except Exception as callback_exc:
+                    logger.debug("Retry callback failed on attempt %s: %s", attempt + 1, callback_exc)
 
             await asyncio.sleep(delay)
 

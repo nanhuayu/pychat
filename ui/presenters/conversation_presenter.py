@@ -34,7 +34,7 @@ class ConversationPresenter:
 
     def select(self, conversation_id: str) -> None:
         host = self._host
-        conversation = host.conv_service.load(conversation_id)
+        conversation = host.services.conv_service.load(conversation_id)
         if not conversation:
             return
 
@@ -138,7 +138,7 @@ class ConversationPresenter:
         host.input_area.set_work_dir("")
         host.input_area.set_conversation(host.current_conversation)
         try:
-            host.conv_service.save(host.current_conversation)
+            host.services.conv_service.save(host.current_conversation)
         except Exception as e:
             logger.debug("Failed to save new conversation shell: %s", e)
         host._sync_input_enabled()
@@ -149,9 +149,9 @@ class ConversationPresenter:
 
     def import_from_file(self, file_path: str) -> None:
         host = self._host
-        conversation = host.conv_service.import_from_file(file_path)
+        conversation = host.services.conv_service.import_from_file(file_path)
         if conversation:
-            conversations = host.conv_service.list_all()
+            conversations = host.services.conv_service.list_all()
             host.sidebar.update_conversations(conversations)
             host.sidebar.select_conversation(conversation.id)
             self.select(conversation.id)
@@ -166,11 +166,11 @@ class ConversationPresenter:
     def delete(self, conversation_id: str) -> None:
         host = self._host
         try:
-            asyncio.run(host.mcp_manager.close_conversation_sessions(conversation_id))
+            asyncio.run(host.services.tool_manager.close_conversation_sessions(conversation_id))
         except Exception as e:
             logger.debug("Failed to close MCP sessions for deleted conversation: %s", e)
-        if host.conv_service.delete(conversation_id):
-            conversations = host.conv_service.list_all()
+        if host.services.conv_service.delete(conversation_id):
+            conversations = host.services.conv_service.list_all()
             host.sidebar.update_conversations(conversations)
 
             if host.current_conversation and host.current_conversation.id == conversation_id:
@@ -189,18 +189,18 @@ class ConversationPresenter:
 
     def duplicate(self, conversation_id: str) -> None:
         host = self._host
-        src = host.conv_service.load(conversation_id)
+        src = host.services.conv_service.load(conversation_id)
         if not src:
             QMessageBox.warning(host, "复制失败", "未找到要复制的会话")
             return
 
-        dup = host.conv_service.duplicate(src)
+        dup = host.services.conv_service.duplicate(src)
 
-        if not host.conv_service.save(dup):
+        if not host.services.conv_service.save(dup):
             QMessageBox.warning(host, "复制失败", "保存会话副本失败")
             return
 
-        conversations = host.conv_service.list_all()
+        conversations = host.services.conv_service.list_all()
         host.sidebar.update_conversations(conversations)
         host.sidebar.select_conversation(dup.id)
         self.select(dup.id)
@@ -284,12 +284,12 @@ class ConversationPresenter:
             if not skill_name:
                 return
             work_dir = getattr(host.current_conversation, "work_dir", ".") if host.current_conversation else "."
-            skill = host.skill_service.get(skill_name, work_dir=work_dir)
+            skill = host.services.skill_service.get(skill_name, work_dir=work_dir)
             if skill is None:
                 self._append_info_message(f"Skill `{skill_name}` not found for the current workspace.")
                 return
 
-            spec = host.skill_service.get_invocation_spec(skill_name, work_dir=work_dir)
+            spec = host.services.skill_service.get_invocation_spec(skill_name, work_dir=work_dir)
             if spec is not None and not spec.user_invocable:
                 self._append_info_message(f"Skill `{skill_name}` is not user-invocable.")
                 return
@@ -335,7 +335,7 @@ class ConversationPresenter:
         info_msg = Message(role="assistant", content=content)
         host.current_conversation.messages.append(info_msg)
         host.chat_view.add_message(info_msg)
-        host.conv_service.save(host.current_conversation)
+        host.services.conv_service.save(host.current_conversation)
 
     def _run_shell_command(self, payload: ShellInvocation | None) -> None:
         host = self._host
@@ -360,7 +360,7 @@ class ConversationPresenter:
         host.chat_view.add_message(user_msg)
 
         try:
-            result_text = host.command_service.execute_shell_invocation(
+            result_text = host.services.command_service.execute_shell_invocation(
                 payload,
                 work_dir=getattr(conversation, "work_dir", "") or ".",
                 permission_policy=ToolPermissionPolicy.from_config(host._app_settings),
@@ -383,10 +383,10 @@ class ConversationPresenter:
         conversation.add_message(assistant_msg)
         host.chat_view.add_message(assistant_msg)
         host.stats_panel.update_stats(conversation)
-        host.conv_service.save(conversation)
+        host.services.conv_service.save(conversation)
 
         try:
-            conversations = host.conv_service.list_all()
+            conversations = host.services.conv_service.list_all()
             host.sidebar.update_conversations(conversations)
             host.sidebar.select_conversation(conversation.id)
         except Exception as exc:

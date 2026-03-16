@@ -1,10 +1,14 @@
 import json
+import logging
 import subprocess
 import sys
 import os
 from typing import Any, Dict
 
 from core.tools.base import BaseTool, ToolContext, ToolResult
+
+
+logger = logging.getLogger(__name__)
 
 
 def _decode_subprocess_output(data: object) -> str:
@@ -22,8 +26,10 @@ def _decode_subprocess_output(data: object) -> str:
     for enc in ("utf-8", "utf-8-sig", "gbk", "mbcs"):
         try:
             return raw.decode(enc)
-        except Exception:
-            pass
+        except UnicodeDecodeError:
+            continue
+        except Exception as exc:
+            logger.debug("Unexpected python exec decode failure for encoding %s: %s", enc, exc)
     return raw.decode("utf-8", errors="replace")
 
 class PythonExecTool(BaseTool):

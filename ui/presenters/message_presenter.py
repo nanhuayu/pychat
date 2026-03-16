@@ -71,7 +71,7 @@ class MessagePresenter:
             "show_thinking", bool(host._app_settings.get("show_thinking", True))
         )
         host.stats_panel.update_stats(host.current_conversation)
-        host.conv_service.save(host.current_conversation)
+        host.services.conv_service.save(host.current_conversation)
 
         extra_metadata = dict(metadata or {})
 
@@ -100,9 +100,9 @@ class MessagePresenter:
             host.current_conversation.generate_title_from_first_message()
 
         host.chat_view.add_message(user_message)
-        host.conv_service.save(host.current_conversation)
+        host.services.conv_service.save(host.current_conversation)
 
-        conversations = host.conv_service.list_all()
+        conversations = host.services.conv_service.list_all()
         host.sidebar.update_conversations(conversations)
         host.sidebar.select_conversation(host.current_conversation.id)
 
@@ -120,7 +120,7 @@ class MessagePresenter:
             return
 
         from services.agent_service import AgentService
-        debug_log_path = AgentService.get_debug_log_path(host._app_settings, host.storage)
+        debug_log_path = AgentService.get_debug_log_path(host._app_settings, host.services.storage)
 
         enable_thinking = bool(
             (conversation.settings or {}).get(
@@ -191,7 +191,7 @@ class MessagePresenter:
         if skill_run:
             skill_name = str(skill_run.get("name") or "").strip().lower()
             work_dir = getattr(conversation, "work_dir", ".") or "."
-            spec = host.skill_service.get_invocation_spec(skill_name, work_dir=work_dir)
+            spec = host.services.skill_service.get_invocation_spec(skill_name, work_dir=work_dir)
             if spec is not None:
                 return build_run_policy(
                     mode_slug=spec.mode,
@@ -262,7 +262,7 @@ class MessagePresenter:
         target_conv = (
             host.current_conversation
             if (host.current_conversation and host.current_conversation.id == conversation_id)
-            else host.conv_service.load(conversation_id)
+            else host.services.conv_service.load(conversation_id)
         )
         if not target_conv:
             return
@@ -275,7 +275,7 @@ class MessagePresenter:
 
         target_conv.add_message(message)
         self._apply_runtime_message_updates(target_conv, message)
-        host.conv_service.save(target_conv)
+        host.services.conv_service.save(target_conv)
 
         if host.current_conversation and host.current_conversation.id == conversation_id:
             if message.role == "assistant":
@@ -314,7 +314,7 @@ class MessagePresenter:
         if host.current_conversation and host.current_conversation.id == conversation_id:
             target = host.current_conversation
         else:
-            target = host.conv_service.load(conversation_id)
+            target = host.services.conv_service.load(conversation_id)
 
         if not target:
             return
@@ -323,10 +323,10 @@ class MessagePresenter:
         if not message_already_exists:
             target.add_message(response)
         self._apply_runtime_message_updates(target, response)
-        host.conv_service.save(target)
+        host.services.conv_service.save(target)
 
         try:
-            conversations = host.conv_service.list_all()
+            conversations = host.services.conv_service.list_all()
             host.sidebar.update_conversations(conversations)
         except Exception as e:
             logger.debug("Failed to refresh sidebar after response complete: %s", e)
@@ -354,11 +354,11 @@ class MessagePresenter:
         if host.current_conversation and host.current_conversation.id == conversation_id:
             target = host.current_conversation
         else:
-            target = host.conv_service.load(conversation_id)
+            target = host.services.conv_service.load(conversation_id)
 
         if target:
             target.add_message(error_message)
-            host.conv_service.save(target)
+            host.services.conv_service.save(target)
 
         if host.current_conversation and host.current_conversation.id == conversation_id:
             host.chat_view.finish_streaming_response(error_message)
@@ -397,7 +397,7 @@ class MessagePresenter:
             message.content = dialog.get_edited_content()
             message.images = dialog.get_edited_images()
             host.chat_view.update_message(message)
-            host.conv_service.save(host.current_conversation)
+            host.services.conv_service.save(host.current_conversation)
 
     def delete(self, message_id: str) -> None:
         host = self._host
@@ -415,7 +415,7 @@ class MessagePresenter:
             for mid in deleted_ids:
                 host.chat_view.remove_message(mid)
             host.stats_panel.update_stats(host.current_conversation)
-            host.conv_service.save(host.current_conversation)
+            host.services.conv_service.save(host.current_conversation)
             self._update_header(host.current_conversation.id)
 
     # ------------------------------------------------------------------

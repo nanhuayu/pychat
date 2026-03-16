@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from core.config import get_global_subdir
-from core.tools.naming import build_mcp_tool_name, tool_names_match
+from core.tools.mcp.naming import build_mcp_tool_name, tool_names_match
 
 logger = logging.getLogger(__name__)
 

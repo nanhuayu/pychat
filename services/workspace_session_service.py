@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -9,6 +10,9 @@ from typing import Any, Dict
 
 from core.config import get_global_subdir
 from models.conversation import Conversation
+
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_slug(value: str, *, fallback: str) -> str:
@@ -135,12 +139,13 @@ class WorkspaceSessionService:
         for path in legacy_files:
             try:
                 path.unlink(missing_ok=True)
-            except Exception:
+            except Exception as exc:
+                logger.debug("Failed to remove legacy workspace session file %s: %s", path, exc)
                 continue
 
         docs_dir = session_dir / "documents"
         if docs_dir.exists():
             try:
                 shutil.rmtree(docs_dir, ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to remove legacy workspace session documents dir %s: %s", docs_dir, exc)

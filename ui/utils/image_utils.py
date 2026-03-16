@@ -11,6 +11,7 @@ Keeping this logic here prevents widget code from growing complex.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 from typing import Iterable, Tuple, List, Optional
 
@@ -19,6 +20,9 @@ from PyQt6.QtGui import QImage, QPixmap, QGuiApplication
 
 # Re-export for convenience (actual implementation in utils/image_encoding.py to avoid circular imports)
 from utils.image_encoding import encode_image_file_to_data_url
+
+
+logger = logging.getLogger(__name__)
 
 
 _SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -77,8 +81,8 @@ def extract_images_from_mime(mime_data: object) -> Tuple[List[str], List[str]]:
                 url = qimage_to_data_url(data)
                 if url:
                     data_urls.append(url)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to extract embedded image from mime data: %s", exc)
 
         if hasattr(mime_data, "hasUrls") and mime_data.hasUrls():
             try:
@@ -86,9 +90,10 @@ def extract_images_from_mime(mime_data: object) -> Tuple[List[str], List[str]]:
                     p = u.toLocalFile()
                     if is_supported_image_path(p):
                         file_paths.append(p)
-            except Exception:
-                pass
-    except Exception:
+            except Exception as exc:
+                logger.debug("Failed to extract image file paths from mime data: %s", exc)
+    except Exception as exc:
+        logger.debug("Failed to inspect mime data for images: %s", exc)
         return data_urls, file_paths
 
     return data_urls, file_paths
@@ -102,5 +107,6 @@ def extract_images_from_clipboard() -> List[str]:
         data_urls, file_paths = extract_images_from_mime(md)
         # Prefer embedded image data; also accept file paths if clipboard provides them.
         return data_urls + file_paths
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to extract clipboard images: %s", exc)
         return []

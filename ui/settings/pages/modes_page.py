@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import Qt
@@ -23,6 +24,9 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config import get_user_modes_json_path, load_user_modes_dict, save_user_modes_dict
+
+
+logger = logging.getLogger(__name__)
 from core.modes.manager import ModeManager
 from core.modes.types import ModeConfig, GroupOptions
 
@@ -252,8 +256,8 @@ class ModesPage(QWidget):
     def _open_config_dir(self) -> None:
         try:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_user_modes_json_path().parent)))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to open modes config directory: %s", exc)
 
     def reload_from_disk(self) -> None:
         try:

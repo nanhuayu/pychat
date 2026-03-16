@@ -2,6 +2,7 @@
 Chat view widget - Compact responsive layout
 """
 
+import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QFrame, QSizePolicy, QPushButton, QToolButton, QFileDialog
 )
@@ -13,6 +14,9 @@ from models.conversation import Message, Conversation
 from .message_widget import MessageWidget, MarkdownView
 from .chat.streaming_overlay import StreamingOverlay
 from ui.utils.image_utils import extract_images_from_mime, extract_images_from_clipboard
+
+
+logger = logging.getLogger(__name__)
 
 
 class ChatView(QWidget):
@@ -113,8 +117,8 @@ class ChatView(QWidget):
             self.scroll_area.viewport().setAcceptDrops(True)
             self.scroll_area.viewport().installEventFilter(self)
             self.scroll_area.viewport().setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to enable drag-and-drop on chat view: %s", exc)
 
         # Debounced nav state updates (scrolling can emit valueChanged frequently)
         self._nav_update_timer = QTimer(self)
@@ -138,8 +142,8 @@ class ChatView(QWidget):
                             if sources:
                                 self.images_dropped.emit(sources)
                                 return True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to handle chat view clipboard paste: %s", exc)
 
                 if event.type() == QEvent.Type.DragEnter:
                     md = event.mimeData()
@@ -155,8 +159,8 @@ class ChatView(QWidget):
                         event.acceptProposedAction()
                         self.images_dropped.emit(sources)
                         return True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed during chat view drag/drop event handling: %s", exc)
 
         return super().eventFilter(watched, event)
 

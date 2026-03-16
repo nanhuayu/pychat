@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import threading
 import uuid
@@ -12,6 +13,9 @@ from core.llm.client import LLMClient
 from core.prompts.templates import DEFAULT_PROMPT_OPTIMIZER_SYSTEM_PROMPT
 from models.conversation import Conversation, Message
 from models.provider import Provider
+
+
+logger = logging.getLogger(__name__)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -106,16 +110,16 @@ class PromptOptimizer(QObject):
             finally:
                 try:
                     loop.run_until_complete(loop.shutdown_asyncgens())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to shutdown prompt optimizer async generators: %s", exc)
                 try:
                     loop.run_until_complete(loop.shutdown_default_executor())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to shutdown prompt optimizer default executor: %s", exc)
                 try:
                     loop.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to close prompt optimizer event loop: %s", exc)
 
         th = threading.Thread(target=run, name="PromptOptimizer", daemon=True)
         th.start()

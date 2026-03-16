@@ -23,7 +23,7 @@ from models.conversation import Conversation, Message
 from models.provider import Provider
 
 from core.llm.client import LLMClient
-from core.tools.manager import McpManager
+from core.tools.manager import ToolManager
 from core.tools.base import ToolResult
 from core.config import load_app_config, AppConfig
 from core.task.types import (
@@ -82,12 +82,12 @@ class Task:
         self,
         *,
         client: LLMClient,
-        mcp_manager: McpManager,
+        tool_manager: ToolManager,
     ) -> None:
         self._client = client
-        self._mcp_manager = mcp_manager
+        self._tool_manager = tool_manager
         self._llm_executor = LLMExecutor(client)
-        self._tool_executor = ToolExecutor(mcp_manager)
+        self._tool_executor = ToolExecutor(tool_manager)
         self._pre_turn_hooks: list[Callable] = []
         self._post_turn_hooks: list[Callable] = []
 
@@ -427,8 +427,8 @@ class Task:
                 conversation.mode = switched_mode
                 try:
                     tool_msg.metadata["mode_switch"] = switched_mode
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to annotate tool message with mode switch: %s", exc)
 
             emitter.emit(TaskEventKind.STEP, turn=turn_context.turn, data=tool_msg)
             conversation.add_message(tool_msg)
@@ -740,7 +740,7 @@ class Task:
             except Exception as e:
                 logger.debug("Failed to inherit session state for subtask: %s", e)
 
-            child_task = Task(client=self._client, mcp_manager=self._mcp_manager)
+            child_task = Task(client=self._client, tool_manager=self._tool_manager)
             result = await child_task.run(
                 provider=provider,
                 conversation=child_conv,

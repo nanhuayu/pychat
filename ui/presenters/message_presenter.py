@@ -45,7 +45,7 @@ class MessagePresenter:
         host = self._host
 
         if not host.current_conversation:
-            host.current_conversation = Conversation()
+            host.current_conversation = host._ensure_current_conversation_shell()
 
         if host.message_runtime.is_streaming(host.current_conversation.id):
             QMessageBox.information(host, "提示", "当前会话正在生成中，请稍候或先取消生成。")
@@ -62,14 +62,9 @@ class MessagePresenter:
             QMessageBox.warning(host, "错误", "请选择一个模型")
             return
 
+        host.current_conversation = host._seed_conversation_from_input(host.current_conversation)
         host.current_conversation.provider_id = provider_id
         host.current_conversation.model = model
-
-        if host.current_conversation.settings is None:
-            host.current_conversation.settings = {}
-        host.current_conversation.settings.setdefault(
-            "show_thinking", bool(host._app_settings.get("show_thinking", True))
-        )
         host.stats_panel.update_stats(host.current_conversation)
         host.services.conv_service.save(host.current_conversation)
 
@@ -203,15 +198,23 @@ class MessagePresenter:
                 )
 
         try:
-            return host.input_area.build_run_policy(
-                enable_thinking=enable_thinking, retry_config=retry_cfg
+            mode_slug = host.input_area.get_selected_mode_slug()
+            enable_search, enable_mcp = host.input_area.get_effective_tool_flags()
+            return build_run_policy(
+                mode_slug=str(mode_slug or "chat"),
+                enable_thinking=bool(enable_thinking),
+                enable_search=bool(enable_search),
+                enable_mcp=bool(enable_mcp),
+                mode_manager=getattr(host.input_area, "_mode_manager", None),
+                retry_config=retry_cfg,
             )
         except Exception as e:
-            logger.warning("Failed to build run policy from input area: %s", e)
-            return AgentService.build_run_policy(
-                conversation=conversation,
-                app_settings=host._app_settings,
-                enable_thinking=enable_thinking,
+            logger.warning("Failed to build run policy from input state: %s", e)
+            from core.task.types import RunPolicy
+
+            return RunPolicy(
+                mode=str(getattr(conversation, "mode", "chat") or "chat"),
+                enable_thinking=bool(enable_thinking),
             )
 
     @staticmethod

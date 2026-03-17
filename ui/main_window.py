@@ -363,6 +363,23 @@ class MainWindow(QMainWindow):
     def _new_conversation(self):
         self._conv_presenter.new()
 
+    def _seed_conversation_from_input(self, conversation: Conversation) -> Conversation:
+        conversation.provider_id = self.input_area.get_selected_provider_id()
+        conversation.model = self.input_area.get_selected_model()
+        conversation.mode = str(self.input_area.get_selected_mode_slug() or 'chat') or 'chat'
+        conversation.work_dir = self.input_area.get_work_dir()
+        settings = dict(conversation.settings or {})
+        settings['show_thinking'] = bool(self.input_area.thinking_toggle.isChecked())
+        settings['enable_mcp'] = bool(self.input_area.is_mcp_enabled())
+        settings['enable_search'] = bool(self.input_area.is_search_enabled())
+        conversation.settings = settings
+        return conversation
+
+    def _ensure_current_conversation_shell(self) -> Conversation:
+        if not self.current_conversation:
+            self.current_conversation = Conversation()
+        return self._seed_conversation_from_input(self.current_conversation)
+
     def _apply_task_ops(self, ops: list[dict]) -> None:
         if not self.current_conversation:
             return
@@ -431,11 +448,10 @@ class MainWindow(QMainWindow):
 
     def _on_work_dir_changed(self, path: str):
         """Handle workspace directory change"""
-        if self.current_conversation:
-            self.current_conversation.work_dir = path
-            self.input_area.set_work_dir(path)
-            self.services.conv_service.save(self.current_conversation)
-            # Maybe show a toast or status bar message?
+        self.input_area.set_work_dir(path)
+        conversation = self._ensure_current_conversation_shell()
+        conversation.work_dir = path
+        self.services.conv_service.save(conversation)
     
     def _import_conversation(self, file_path: str):
         self._conv_presenter.import_from_file(file_path)
@@ -593,39 +609,24 @@ class MainWindow(QMainWindow):
             self.sidebar.select_conversation(self.current_conversation.id)
 
     def _on_conversation_show_thinking_changed(self, enabled: bool):
-        if not self.current_conversation:
-            self.current_conversation = Conversation()
-        if self.current_conversation.settings is None:
-            self.current_conversation.settings = {}
-        self.current_conversation.settings['show_thinking'] = bool(enabled)
-        self.services.conv_service.save(self.current_conversation)
+        conversation = self._ensure_current_conversation_shell()
+        conversation.settings['show_thinking'] = bool(enabled)
+        self.services.conv_service.save(conversation)
 
     def _on_conversation_mcp_changed(self, enabled: bool) -> None:
-        if not self.current_conversation:
-            self.current_conversation = Conversation()
-        if self.current_conversation.settings is None:
-            self.current_conversation.settings = {}
-        self.current_conversation.settings['enable_mcp'] = bool(enabled)
-        self.services.conv_service.save(self.current_conversation)
+        conversation = self._ensure_current_conversation_shell()
+        conversation.settings['enable_mcp'] = bool(enabled)
+        self.services.conv_service.save(conversation)
 
     def _on_conversation_search_changed(self, enabled: bool) -> None:
-        if not self.current_conversation:
-            self.current_conversation = Conversation()
-        if self.current_conversation.settings is None:
-            self.current_conversation.settings = {}
-        self.current_conversation.settings['enable_search'] = bool(enabled)
-        self.services.conv_service.save(self.current_conversation)
+        conversation = self._ensure_current_conversation_shell()
+        conversation.settings['enable_search'] = bool(enabled)
+        self.services.conv_service.save(conversation)
 
     def _on_conversation_mode_changed(self, mode_slug: str) -> None:
-        if not self.current_conversation:
-            self.current_conversation = Conversation()
-        self.current_conversation.mode = str(mode_slug or 'chat') or 'chat'
-        if self.current_conversation.settings is None:
-            self.current_conversation.settings = {}
-        self.current_conversation.settings['show_thinking'] = bool(self.input_area.thinking_toggle.isChecked())
-        self.current_conversation.settings['enable_mcp'] = bool(self.input_area.is_mcp_enabled())
-        self.current_conversation.settings['enable_search'] = bool(self.input_area.is_search_enabled())
-        self.services.conv_service.save(self.current_conversation)
+        conversation = self._ensure_current_conversation_shell()
+        conversation.mode = str(mode_slug or 'chat') or 'chat'
+        self.services.conv_service.save(conversation)
     
     def _on_response_step(self, conversation_id: str, request_id: str, message: Message):
         self._msg_presenter.on_response_step(conversation_id, request_id, message)

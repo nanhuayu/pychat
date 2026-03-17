@@ -27,18 +27,26 @@ def get_mode_feature_policy(mode: ModeConfig) -> ModeFeaturePolicy:
     """Derive UI + runtime feature policy from ModeConfig.groups."""
 
     groups = mode.group_names()
+    slug = str(getattr(mode, "slug", "") or "").strip().lower()
+
+    allow_mcp = bool("mcp" in groups)
+    allow_search = bool("search" in groups)
 
     default_mcp = bool("mcp" in groups or "command" in groups or "edit" in groups)
     default_search = bool("search" in groups)
     default_thinking = bool("edit" in groups or "command" in groups)
 
+    if slug == "chat":
+        default_mcp = False
+        default_search = False
+
     return ModeFeaturePolicy(
         allow_thinking=True,
-        allow_mcp=True,
-        allow_search=True,
+        allow_mcp=allow_mcp,
+        allow_search=allow_search,
         default_thinking=default_thinking,
-        default_mcp=default_mcp,
-        default_search=default_search,
+        default_mcp=default_mcp if allow_mcp else False,
+        default_search=default_search if allow_search else False,
     )
 
 

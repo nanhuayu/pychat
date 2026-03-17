@@ -1,35 +1,22 @@
-"""
-Input area widget - Compact responsive layout
-"""
+"""Input area widget - compact composer and attachments."""
 
 import logging
-import os
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-    QTextEdit, QLabel, QFileDialog, QComboBox,
-    QFrame, QSizePolicy, QToolButton, QListWidget,
-    QAbstractItemView,
-    QStyle,
-)
-from PyQt6.QtCore import pyqtSignal, Qt, QSize, QStringListModel, QRect
-from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QTextCursor
-import os
 from typing import Any, Callable, Dict, List, Optional
+
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtWidgets import QFileDialog, QFrame, QSizePolicy, QVBoxLayout, QWidget
 
 from core.commands import CommandRegistry
 from core.modes.manager import ModeManager
 from core.modes.features import get_mode_feature_policy, clamp_feature_flags
-from core.task.types import RunPolicy
-from core.task.builder import build_run_policy
-from core.commands.mentions import MentionCandidate, MentionKind, MentionQuery
 
 from ui.utils.image_utils import extract_images_from_mime, is_supported_image_path
-from ui.utils.image_loader import load_pixmap
 
 # Extracted sub-components
-from ui.widgets.input.attachment_strip import AttachmentPreviewItem, AttachmentPreviewStrip
+from ui.widgets.input.attachment_strip import AttachmentPreviewStrip
 from ui.widgets.input.composer_toolbar import ComposerToolbar
-from ui.widgets.input.text_editor import FileCompleterPopup, MessageTextEdit
+from ui.widgets.input.text_editor import MessageTextEdit
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +73,9 @@ class InputArea(QWidget):
             self._apply_mode_policy(apply_defaults=False)
         except Exception as e:
             logger.debug("Failed to apply mode policy after work_dir change: %s", e)
+
+    def get_work_dir(self) -> str:
+        return str(self._work_dir or "")
 
     def _refresh_modes(self, work_dir: str) -> None:
         """Reload modes from global user config and keep selection if possible."""
@@ -146,7 +136,7 @@ class InputArea(QWidget):
         self.toolbar.conversation_settings_requested.connect(self.conversation_settings_requested.emit)
         self.toolbar.provider_settings_requested.connect(self.provider_settings_requested.emit)
         self.toolbar.prompt_optimize_requested.connect(self._on_prompt_optimize_clicked)
-        self.toolbar.send_requested.connect(self._on_send_btn_clicked)
+        self.toolbar.send_requested.connect(self._handle_send_requested)
         wrapper_layout.addWidget(self.toolbar)
         layout.addWidget(input_wrapper)
 
@@ -157,7 +147,6 @@ class InputArea(QWidget):
         self.mcp_toggle = self.toolbar.mcp_toggle
         self.search_toggle = self.toolbar.search_toggle
         self.prompt_optimize_btn = self.toolbar.prompt_optimize_btn
-        self.send_btn = self.toolbar.send_btn
 
         self._mode_manager = ModeManager(self._work_dir or None)
         for m in self._mode_manager.list_modes():
@@ -252,7 +241,7 @@ class InputArea(QWidget):
             logger.debug("Failed to set optimize busy state: %s", e)
         self.prompt_optimize_requested.emit(text)
 
-    def _on_send_btn_clicked(self):
+    def _handle_send_requested(self):
         if self._is_streaming:
             self.cancel_requested.emit()
         else:
@@ -385,37 +374,6 @@ class InputArea(QWidget):
         finally:
             self._suppress_tool_signals = False
 
-    def build_run_policy(self, *, enable_thinking: Optional[bool] = None, retry_config=None) -> RunPolicy:
-        """Build RunPolicy based on selected mode + current toggles.
-
-        Note: The core mapping lives in `core.task.builder.build_run_policy`
-        (pure core, reusable by future TUI). This method only reads UI state.
-        """
-
-        try:
-            slug = self.get_selected_mode_slug()
-        except Exception as e:
-            logger.debug("Failed to get mode slug for run policy: %s", e)
-            slug = "chat"
-
-        # Tool flags are clamped by mode feature policy.
-        enable_search, enable_mcp = self.get_effective_tool_flags()
-
-        if enable_thinking is None:
-            try:
-                enable_thinking = bool(self.thinking_toggle.isChecked())
-            except Exception:
-                enable_thinking = True
-
-        return build_run_policy(
-            mode_slug=str(slug or "chat"),
-            enable_thinking=bool(enable_thinking),
-            enable_search=bool(enable_search),
-            enable_mcp=bool(enable_mcp),
-            mode_manager=getattr(self, "_mode_manager", None),
-            retry_config=retry_config,
-        )
-
     def apply_mode_policy(self, apply_defaults: bool = False) -> None:
         """Public wrapper for applying mode policy.
 
@@ -529,7 +487,7 @@ class InputArea(QWidget):
     
     def set_enabled(self, enabled: bool):
         self.text_input.setEnabled(enabled)
-        self.send_btn.setEnabled(enabled)
+        self.toolbar.send_btn.setEnabled(enabled)
     
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls() or event.mimeData().hasImage():

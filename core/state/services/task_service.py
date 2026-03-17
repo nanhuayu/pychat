@@ -3,6 +3,15 @@ from models.state import SessionState, Task, TaskStatus, TaskPriority
 
 class TaskService:
     @staticmethod
+    def prune_terminal_tasks(state: SessionState) -> int:
+        original_len = len(state.tasks)
+        state.tasks = [
+            task for task in state.tasks
+            if task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        ]
+        return max(0, original_len - len(state.tasks))
+
+    @staticmethod
     def handle_ops(state: SessionState, ops: List[Dict[str, Any]], current_seq: int) -> List[str]:
         feedback = []
         for op in ops:
@@ -59,5 +68,9 @@ class TaskService:
                     feedback.append(f"✅ Deleted task [{task_id}]")
                 else:
                     feedback.append(f"⚠️ Task [{task_id}] not found to delete")
+
+        pruned = TaskService.prune_terminal_tasks(state)
+        if pruned:
+            feedback.append(f"🧹 Removed {pruned} completed/cancelled task(s)")
                     
         return feedback

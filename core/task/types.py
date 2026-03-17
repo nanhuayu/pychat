@@ -28,6 +28,14 @@ class TaskResult:
     error: Optional[str] = None
 
 
+@dataclass
+class SubTaskOutcome:
+    status: TaskStatus
+    message: str
+    completion_command: str = ""
+    completed: bool = False
+
+
 # ---------------------------------------------------------------------------
 # TaskEvent — lightweight envelope emitted during execution
 # ---------------------------------------------------------------------------

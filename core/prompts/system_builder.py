@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from models.conversation import Conversation
 from models.provider import Provider
-from utils.file_context import get_file_tree
 
+from core.context.file_context import get_file_tree
 from core.config.schema import AppConfig
 from core.modes.manager import resolve_mode_config
 from core.modes.types import normalize_mode_slug
@@ -196,9 +196,15 @@ def build_session_document_sections(conversation: Conversation, mode_slug: str) 
         if normalized in {"plan", "memory"}:
             continue
         content = str(getattr(doc, "content", "") or "").strip()
-        if not content:
+        abstract = str(getattr(doc, "abstract", "") or "").strip()
+        references = [str(item).strip() for item in (getattr(doc, "references", []) or []) if str(item).strip()]
+        preview_source = abstract or content
+        if not preview_source:
             continue
-        other_docs.append(f"- {name}: {_trim_prompt_block(content, max_chars=240)}")
+        parts = [f"- {name}: {_trim_prompt_block(preview_source, max_chars=240)}"]
+        if references:
+            parts.append(f"refs={', '.join(references[:3])}")
+        other_docs.append(" | ".join(parts))
     if other_docs:
         sections.append("<session_documents>\n" + "\n".join(other_docs) + "\n</session_documents>")
 
@@ -263,7 +269,7 @@ def build_system_prompt(
         for t in tools:
             fn = t.get("function", {})
             tname = fn.get("name", "")
-            tdesc = (fn.get("description") or "")[:100]
+            tdesc = (fn.get("description") or "")
             if tname:
                 tool_lines.append(f"- {tname}: {tdesc}")
         tool_lines.append("</available_tools>")

@@ -99,12 +99,18 @@ class SessionDocument:
     """
     name: str
     content: str = ""
+    abstract: str = ""
+    kind: str = ""
+    references: List[str] = field(default_factory=list)
     updated_seq: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             'name': self.name,
             'content': self.content,
+            'abstract': self.abstract,
+            'kind': self.kind,
+            'references': list(self.references),
             'updated_seq': self.updated_seq,
         }
 
@@ -113,6 +119,9 @@ class SessionDocument:
         return cls(
             name=data.get('name', ''),
             content=data.get('content', ''),
+            abstract=data.get('abstract', ''),
+            kind=data.get('kind', ''),
+            references=[str(item) for item in (data.get('references', []) or []) if str(item).strip()],
             updated_seq=data.get('updated_seq', 0),
         )
 
@@ -245,8 +254,16 @@ class SessionState:
             for name, doc in self.documents.items():
                 if str(name).strip().lower() in excluded:
                     continue
-                preview = (doc.content[:150] + "...") if len(doc.content) > 150 else doc.content
-                doc_lines.append(f"\n**{name}**:\n{preview}")
+                preview_source = doc.abstract or doc.content
+                preview = (preview_source[:150] + "...") if len(preview_source) > 150 else preview_source
+                refs = ", ".join(doc.references[:3]) if doc.references else ""
+                line = f"\n**{name}**"
+                if doc.kind:
+                    line += f" [{doc.kind}]"
+                line += f":\n{preview or '-'}"
+                if refs:
+                    line += f"\nrefs: {refs}"
+                doc_lines.append(line)
             if len(doc_lines) > 1:
                 blocks.append("\n".join(doc_lines))
         

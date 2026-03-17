@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, List, Union
+from typing import Any, Callable, Dict, Union
 
 
 class CommandAction(str, Enum):
@@ -12,18 +12,19 @@ class CommandAction(str, Enum):
     COMPACT = "compact"           # Trigger context condensation
     CLEAR = "clear"               # Clear conversation / new conversation
     MODE_SWITCH = "mode_switch"   # Switch mode (data = slug)
-    SKILL_RUN = "skill_run"            # Run a skill in the current turn
+    PROMPT_RUN = "prompt_run"     # Run a prompt in the normal runtime chain
     SHELL_RUN = "shell_run"            # Run an explicit shell command in the current turn
     EXPORT = "export"             # Export conversation (data = format)
 
 
 @dataclass(frozen=True)
-class SkillInvocation:
-    """Structured payload for direct skill execution."""
+class PromptInvocation:
+    """Structured payload for command-triggered runtime execution."""
 
-    skill_name: str
-    user_input: str = ""
-    invoke_mode: str = "run"
+    content: str
+    mode_slug: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    document_updates: Dict[str, str] = field(default_factory=dict)
     source_prefix: str = "/"
     original_text: str = ""
 
@@ -65,5 +66,4 @@ class SlashCommand:
     name: str
     description: str
     handler: Callable[..., Union[str, CommandResult]]
-    aliases: List[str] = field(default_factory=list)
     presentation: CommandPresentation = field(default_factory=CommandPresentation)

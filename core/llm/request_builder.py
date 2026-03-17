@@ -6,12 +6,11 @@ from typing import Any, Dict, List, Optional
 
 from models.conversation import Conversation, Message
 from models.provider import Provider
+from core.attachments import encode_image_file_to_data_url
 from core.prompts.system import PromptManager
 from core.prompts.context_assembler import build_context_messages
 from core.prompts.history import apply_context_window
 from core.config import AppConfig, load_app_config
-
-from utils.image_encoding import encode_image_file_to_data_url
 
 logger = logging.getLogger(__name__)
 

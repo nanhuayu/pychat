@@ -28,13 +28,3 @@ def dispatch_command(
     if isinstance(raw, str):
         return CommandResult(action=CommandAction.DISPLAY, display_text=raw)
     return CommandResult(action=CommandAction.DISPLAY, display_text=str(raw))
-
-
-def dispatch_slash_command(
-    text: str,
-    *,
-    commands: Dict[str, SlashCommand],
-    context: Optional[Dict[str, Any]] = None,
-) -> Optional[CommandResult]:
-    """Backward-compatible wrapper."""
-    return dispatch_command(text, commands=commands, context=context)

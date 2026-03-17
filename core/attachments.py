@@ -62,6 +62,11 @@ def process_attachments(attachments: List[dict]) -> ProcessedAttachments:
 
 def _process_image(path: str) -> str | None:
     """Encode an image file to a data URI, or return as-is if already encoded."""
+    return encode_image_file_to_data_url(path)
+
+
+def encode_image_file_to_data_url(path: str) -> str | None:
+    """Encode an image file path to the shared data URL format."""
     if isinstance(path, str) and path.startswith('data:'):
         return path
     try:

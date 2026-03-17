@@ -75,7 +75,8 @@ class ComposerToolbar(QWidget):
         self.prompt_optimize_btn.clicked.connect(self.prompt_optimize_requested.emit)
         layout.addWidget(self.prompt_optimize_btn)
 
-        self.send_btn = self._make_button("➤", "发送消息 (Ctrl+Enter)")
+        self.send_btn = self._make_button("", "发送消息 (Ctrl+Enter)")
+        self._set_send_button_icon(is_streaming=False, style=self.style())
         self.send_btn.clicked.connect(self.send_requested.emit)
         layout.addWidget(self.send_btn)
 
@@ -94,22 +95,23 @@ class ComposerToolbar(QWidget):
         return button
 
     def set_streaming_state(self, is_streaming: bool, style) -> None:
+        self._set_send_button_icon(is_streaming=is_streaming, style=style)
         if is_streaming:
-            try:
-                self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_MediaStop))
-            except Exception as exc:
-                logger.debug("Failed to set stop icon on composer toolbar: %s", exc)
-            self.send_btn.setToolTip("停止生成")
             self.prompt_optimize_btn.setEnabled(False)
             self.mcp_toggle.setEnabled(False)
             self.search_toggle.setEnabled(False)
             return
 
+        self.prompt_optimize_btn.setEnabled(True)
+
+    def _set_send_button_icon(self, *, is_streaming: bool, style) -> None:
         try:
-            self.send_btn.setIcon(style.standardIcon(style.StandardPixmap.SP_ArrowRight))
+            pixmap = style.StandardPixmap.SP_MediaStop if is_streaming else style.StandardPixmap.SP_ArrowRight
+            self.send_btn.setIcon(style.standardIcon(pixmap))
         except Exception as exc:
-            logger.debug("Failed to set send icon on composer toolbar: %s", exc)
-        self.send_btn.setToolTip("发送消息 (Ctrl+Enter)")
+            logger.debug("Failed to set send button icon on composer toolbar: %s", exc)
+        self.send_btn.setText("")
+        self.send_btn.setToolTip("停止生成" if is_streaming else "发送消息 (Ctrl+Enter)")
 
     def set_prompt_optimize_busy(self, busy: bool, *, is_streaming: bool) -> None:
         self.prompt_optimize_btn.setEnabled((not busy) and (not is_streaming))

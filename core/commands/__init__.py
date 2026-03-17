@@ -21,8 +21,8 @@ from core.commands.types import (
     CommandAction,
     CommandPresentation,
     CommandResult,
+    PromptInvocation,
     ShellInvocation,
-    SkillInvocation,
     SlashCommand,
 )
 from core.commands.mentions import (
@@ -50,8 +50,6 @@ class CommandRegistry:
 
     def register(self, cmd: SlashCommand) -> None:
         self._commands[cmd.name] = cmd
-        for alias in cmd.aliases:
-            self._commands[alias] = cmd
 
     def get(self, name: str) -> Optional[SlashCommand]:
         return self._commands.get(name)
@@ -199,12 +197,24 @@ class CommandRegistry:
             if prefix == "/":
                 skill_name = self._resolve_skill_alias(cmd_name, context)
                 if skill_name:
+                    work_dir = str((context or {}).get("work_dir") or ".")
+                    skill = SkillsManager(work_dir).get(skill_name)
+                    spec = resolve_skill_invocation_spec(skill) if skill is not None else None
                     return CommandResult(
-                        action=CommandAction.SKILL_RUN,
-                        data=SkillInvocation(
-                            skill_name=skill_name,
-                            user_input=invocation.surrounding_text,
-                            invoke_mode="run",
+                        action=CommandAction.PROMPT_RUN,
+                        data=PromptInvocation(
+                            content=invocation.surrounding_text,
+                            mode_slug=(spec.mode if spec is not None else "agent"),
+                            metadata={
+                                "skill_run": {
+                                    "name": skill_name,
+                                    "user_input": invocation.surrounding_text,
+                                    "invoke_mode": "run",
+                                    "mode": spec.mode if spec is not None else "agent",
+                                    "enable_mcp": bool(spec.enable_mcp) if spec is not None else True,
+                                    "enable_search": bool(spec.enable_search) if spec is not None else False,
+                                }
+                            },
                             source_prefix=prefix,
                             original_text=str(text or "").strip(),
                         ),
@@ -246,7 +256,7 @@ class CommandRegistry:
             for cmd in commands:
                 if cmd.name in seen:
                     continue
-                haystack = f"{cmd.name} {' '.join(cmd.aliases)} {cmd.description}".lower()
+                haystack = f"{cmd.name} {cmd.description}".lower()
                 if name_filter and name_filter not in haystack:
                     continue
                 seen.add(cmd.name)
@@ -394,7 +404,6 @@ class CommandRegistry:
             name="export",
             description="Export conversation (e.g. /export markdown)",
             handler=h.cmd_export,
-            aliases=["save"],
             presentation=CommandPresentation(
                 usage="/export <format>",
                 completion_text="/export ",

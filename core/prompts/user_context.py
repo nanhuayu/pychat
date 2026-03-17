@@ -14,7 +14,7 @@ from dataclasses import replace
 from typing import List
 
 from models.conversation import Conversation, Message
-from utils.file_context import get_file_tree
+from core.context.file_context import get_file_tree
 
 
 RUNTIME_CONTEXT_TAGS = (

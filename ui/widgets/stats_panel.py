@@ -335,13 +335,20 @@ class StatsPanel(QWidget):
             name_label.setObjectName("task_text")
             card_layout.addWidget(name_label)
 
-            preview = str(getattr(doc, 'content', '') or '')
+            preview = str(getattr(doc, 'abstract', '') or '') or str(getattr(doc, 'content', '') or '')
             if len(preview) > 140:
                 preview = preview[:140] + "..."
             content_label = QLabel(preview or "-")
             content_label.setWordWrap(True)
             content_label.setProperty("muted", True)
             card_layout.addWidget(content_label)
+
+            refs = [str(item).strip() for item in (getattr(doc, 'references', []) or []) if str(item).strip()]
+            if refs:
+                refs_label = QLabel(" | ".join(refs[:2]))
+                refs_label.setWordWrap(True)
+                refs_label.setProperty("muted", True)
+                card_layout.addWidget(refs_label)
 
             self.documents_layout.addWidget(card)
     

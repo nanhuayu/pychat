@@ -3,7 +3,6 @@
 Skills are discovered from:
 - ``~/.PyChat/skills/``
 - ``.pychat/skills/``
-- legacy ``.skills/``
 
 Explicit ``/{skill}`` invocation is the only skill execution entrypoint.
 Skills declare how they run through frontmatter rather than runtime heuristics.
@@ -158,10 +157,6 @@ class SkillsManager:
         global_dir = get_global_subdir("skills")
         if global_dir.is_dir():
             dirs.append(global_dir)
-
-        legacy_dir = root / ".skills"
-        if legacy_dir.is_dir():
-            dirs.append(legacy_dir)
 
         return dirs
 

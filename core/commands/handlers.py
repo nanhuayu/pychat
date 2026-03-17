@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from core.commands.types import CommandAction, CommandResult
+from core.commands.types import CommandAction, CommandResult, PromptInvocation
+from core.state.services.document_service import DocumentService
 
 
 def cmd_help(args: str, ctx: Dict[str, Any], *, list_commands) -> str:
@@ -75,17 +76,31 @@ def cmd_skills(args: str, ctx: Dict[str, Any]) -> CommandResult:
     return CommandResult(action=CommandAction.DISPLAY, display_text="\n".join(lines))
 
 
-def cmd_plan(args: str, ctx: Dict[str, Any]) -> str:
+def cmd_plan(args: str, ctx: Dict[str, Any]) -> CommandResult | str:
+    if args.strip():
+        plan_text = args.strip()
+        return CommandResult(
+            action=CommandAction.PROMPT_RUN,
+            data=PromptInvocation(
+                content=plan_text,
+                mode_slug="plan",
+                metadata={
+                    "command_run": {
+                        "name": "plan",
+                        "source": "slash_command",
+                    }
+                },
+                document_updates={"plan": plan_text},
+                source_prefix="/",
+                original_text=f"/plan {plan_text}",
+            ),
+        )
+
     conv = ctx.get("conversation")
     if not conv:
         return "No active conversation."
     state = conv.get_state()
     doc = state.documents.get("plan")
-    if args.strip():
-        from models.state import SessionDocument
-        state.documents["plan"] = SessionDocument(name="plan", content=args.strip())
-        conv.set_state(state)
-        return "Plan updated."
     if doc and doc.content:
         return f"**Session Plan:**\n{doc.content}"
     return "No plan set. Usage: `/plan <content>` to set one."
@@ -104,12 +119,13 @@ def cmd_memory(args: str, ctx: Dict[str, Any]) -> str:
             conv.set_state(state)
             return f"Memory '{key.strip()}' saved."
         else:
-            from models.state import SessionDocument
-            doc = state.documents.get("memory")
-            if doc:
-                doc.content += "\n" + args.strip()
-            else:
-                state.documents["memory"] = SessionDocument(name="memory", content=args.strip())
+            DocumentService.append_document(
+                state,
+                name="memory",
+                content=args.strip(),
+                current_seq=int(conv.current_seq_id() or 0),
+                kind="memory",
+            )
             conv.set_state(state)
             return "Memory appended."
     # Show current memory

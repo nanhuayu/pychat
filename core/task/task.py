@@ -28,6 +28,7 @@ from core.tools.base import ToolResult
 from core.config import load_app_config, AppConfig
 from core.task.types import (
     RunPolicy,
+    SubTaskOutcome,
     TaskEvent,
     TaskEventKind,
     TaskResult,
@@ -370,7 +371,7 @@ class Task:
             subtask_req = (context.state or {}).get("_pending_subtask")
             if subtask_req and isinstance(subtask_req, dict):
                 context.state.pop("_pending_subtask", None)
-                subtask_result = await self._run_subtask(
+                subtask_outcome = await self._run_subtask(
                     subtask_req=subtask_req,
                     provider=provider,
                     conversation=conversation,
@@ -380,7 +381,7 @@ class Task:
                     approval_callback=approval_callback,
                     cancel_event=cancel_event,
                 )
-                tool_result = ToolResult(str(subtask_result))
+                tool_result = ToolResult(subtask_outcome.message)
                 result_text = self._tool_result_to_string(tool_result)
 
             if (context.state or {}).get("_task_completed"):
@@ -715,7 +716,7 @@ class Task:
         on_thinking,
         approval_callback,
         cancel_event,
-    ) -> str:
+    ) -> SubTaskOutcome:
         """Spawn a child Task in an independent conversation context."""
         mode_slug = subtask_req.get("mode", "code")
         message = subtask_req.get("message", "")
@@ -755,15 +756,34 @@ class Task:
             self._merge_subtask_state(parent_conversation=conversation, child_conversation=child_conv)
 
             if result.status == TaskStatus.COMPLETED and result.final_message:
-                return result.final_message.content or "Sub-task completed (no output)."
-            elif result.status == TaskStatus.FAILED:
-                return f"Sub-task failed: {result.error}"
-            elif result.status == TaskStatus.CANCELLED:
-                return "Sub-task was cancelled."
-            return "Sub-task completed."
+                metadata = getattr(result.final_message, "metadata", {}) or {}
+                return SubTaskOutcome(
+                    status=result.status,
+                    message=result.final_message.content or "Sub-task completed (no output).",
+                    completion_command=str(metadata.get("completion_command") or "").strip(),
+                    completed=bool(metadata.get("completion")),
+                )
+            if result.status == TaskStatus.FAILED:
+                return SubTaskOutcome(
+                    status=result.status,
+                    message=f"Sub-task failed: {result.error}",
+                )
+            if result.status == TaskStatus.CANCELLED:
+                return SubTaskOutcome(
+                    status=result.status,
+                    message="Sub-task was cancelled.",
+                )
+            return SubTaskOutcome(
+                status=result.status,
+                message="Sub-task completed.",
+                completed=result.status == TaskStatus.COMPLETED,
+            )
         except Exception as e:
             logger.error("Sub-task failed: %s", e)
-            return f"Sub-task error: {e}"
+            return SubTaskOutcome(
+                status=TaskStatus.FAILED,
+                message=f"Sub-task error: {e}",
+            )
 
     def _merge_subtask_state(self, *, parent_conversation: Conversation, child_conversation: Conversation) -> None:
         try:

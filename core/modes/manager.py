@@ -139,10 +139,7 @@ class ModeManager:
         role_definition = (mode.role_definition or "").strip() or builtin_mode.role_definition
         when_to_use = (mode.when_to_use or "").strip() or builtin_mode.when_to_use
         description = (mode.description or "").strip() or builtin_mode.description
-        if builtin_mode.slug == "plan" and (mode.name or "").strip().lower() in {"", "architect", "plan"}:
-            name = builtin_mode.name
-        else:
-            name = (mode.name or "").strip() or builtin_mode.name
+        name = (mode.name or "").strip() or builtin_mode.name
         custom_instructions = (mode.custom_instructions or "").strip() or builtin_mode.custom_instructions
         tool_allowlist = tuple(mode.tool_allowlist or builtin_mode.tool_allowlist or ())
         tool_denylist = tuple(mode.tool_denylist or builtin_mode.tool_denylist or ())

@@ -3,11 +3,15 @@ import base64
 import tempfile
 import textwrap
 import unittest
+import json
 from pathlib import Path
 
+from core.commands import CommandAction, CommandRegistry, PromptInvocation
 from core.config import AppConfig
 from core.modes.defaults import get_default_modes
+from core.modes.features import get_mode_feature_policy
 from core.task.task import Task
+from core.task.tool_executor import ToolExecutor
 from core.task.types import RetryPolicy, RunPolicy
 from core.llm.request_builder import build_api_messages
 from core.modes.manager import resolve_mode_config
@@ -27,11 +31,13 @@ from core.tools.system.filesystem import ReadFileTool
 from core.tools.system.skills import LoadSkillTool, ReadSkillResourceTool
 from core.tools.system.multi_agent import AttemptCompletionTool
 from core.tools.system.state_mgr import StateMgrTool
+from core.tools.system.document_tools import ManageDocumentTool
 from core.tools.base import ToolContext
 from models.conversation import Conversation, Message
 from models.provider import Provider
 from models.state import SessionDocument
 from services.workspace_session_service import WorkspaceSessionService
+from core.state.services.task_service import TaskService
 
 
 def _make_tools():
@@ -422,6 +428,73 @@ class SkillRuntimeTests(unittest.TestCase):
             self.assertEqual("image", result.content[1]["type"])
             self.assertTrue(str(result.content[1]["data"]).startswith("data:image/png;base64,"))
 
+    def test_plan_command_returns_prompt_run_invocation(self) -> None:
+        registry = CommandRegistry()
+
+        result = registry.execute(
+            "/plan inspect the runtime flow and produce a concrete plan",
+            {"work_dir": ".", "current_mode": "chat"},
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(CommandAction.PROMPT_RUN, result.action)
+        self.assertIsInstance(result.data, PromptInvocation)
+        assert isinstance(result.data, PromptInvocation)
+        self.assertEqual("plan", result.data.mode_slug)
+        self.assertEqual(
+            "inspect the runtime flow and produce a concrete plan",
+            result.data.content,
+        )
+        self.assertEqual(
+            "inspect the runtime flow and produce a concrete plan",
+            result.data.document_updates.get("plan"),
+        )
+
+    def test_skill_command_returns_prompt_run_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            skill_dir = Path(temp_dir) / ".pychat" / "skills" / "demo-skill"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    name: demo-skill
+                    description: Demo skill.
+                    mode: agent
+                    ---
+
+                    # Demo skill
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+
+            registry = CommandRegistry()
+            result = registry.execute(
+                "/demo-skill inspect this repo",
+                {"work_dir": temp_dir, "current_mode": "chat"},
+            )
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(CommandAction.PROMPT_RUN, result.action)
+            self.assertIsInstance(result.data, PromptInvocation)
+            assert isinstance(result.data, PromptInvocation)
+            self.assertEqual("agent", result.data.mode_slug)
+            self.assertEqual("inspect this repo", result.data.content)
+            self.assertEqual("demo-skill", result.data.metadata["skill_run"]["name"])
+
+    def test_skills_manager_ignores_legacy_skills_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            legacy_dir = Path(temp_dir) / ".skills"
+            legacy_dir.mkdir(parents=True)
+            (legacy_dir / "legacy.md").write_text("# legacy skill", encoding="utf-8")
+
+            mgr = SkillsManager(temp_dir)
+
+            self.assertIsNone(mgr.get("legacy"))
+
     def test_workspace_session_snapshot_keeps_only_state_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = WorkspaceSessionService(root_dir=Path(temp_dir) / "workspace_sessions")
@@ -480,6 +553,112 @@ class SkillRuntimeTests(unittest.TestCase):
         self.assertNotIn("📋 Active tasks", result.to_string())
         self.assertNotIn("💾 Memory keys", result.to_string())
 
+    def test_manage_document_survives_post_tool_state_sync(self) -> None:
+        conversation = Conversation(work_dir=".", mode="agent")
+        context = ToolContext(
+            work_dir=".",
+            state=conversation.get_state().to_dict(),
+            conversation=conversation,
+        )
+
+        result = asyncio.run(
+            ManageDocumentTool().execute(
+                {"action": "update", "name": "plan", "content": "inspect\npatch\nverify"},
+                context,
+            )
+        )
+
+        ToolExecutor(tool_manager=object()).sync_state(conversation, context)
+        state = conversation.get_state()
+
+        self.assertFalse(result.is_error)
+        self.assertIn("plan", state.documents)
+        self.assertEqual("inspect\npatch\nverify", state.documents["plan"].content)
+
+    def test_manage_document_persists_document_metadata(self) -> None:
+        conversation = Conversation(work_dir=".", mode="agent")
+        context = ToolContext(
+            work_dir=".",
+            state=conversation.get_state().to_dict(),
+            conversation=conversation,
+        )
+
+        result = asyncio.run(
+            ManageDocumentTool().execute(
+                {
+                    "action": "update",
+                    "name": "report",
+                    "content": "full report body",
+                    "abstract": "repo-level analysis",
+                    "kind": "report",
+                    "references": ["docs/ARCHITECTURE_OPTIMIZATION.md", "core/task/task.py#L700"],
+                },
+                context,
+            )
+        )
+
+        ToolExecutor(tool_manager=object()).sync_state(conversation, context)
+        doc = conversation.get_state().documents["report"]
+
+        self.assertFalse(result.is_error)
+        self.assertEqual("repo-level analysis", doc.abstract)
+        self.assertEqual("report", doc.kind)
+        self.assertEqual(["docs/ARCHITECTURE_OPTIMIZATION.md", "core/task/task.py#L700"], doc.references)
+
+    def test_task_service_prunes_completed_items(self) -> None:
+        conversation = Conversation(work_dir=".", mode="agent")
+        state = conversation.get_state()
+
+        TaskService.handle_ops(
+            state,
+            [{"action": "create", "content": "inspect runtime", "status": "completed"}],
+            current_seq=1,
+        )
+
+        self.assertEqual([], state.tasks)
+
+    def test_workspace_snapshot_persists_tool_written_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conversation = Conversation(work_dir=temp_dir, mode="plan")
+            context = ToolContext(
+                work_dir=temp_dir,
+                state=conversation.get_state().to_dict(),
+                conversation=conversation,
+            )
+
+            asyncio.run(
+                ManageDocumentTool().execute(
+                    {
+                        "action": "update",
+                        "name": "plan",
+                        "content": "analyze\nrefactor\nverify",
+                        "abstract": "plan index",
+                        "references": ["core/task/task.py", "ui/main_window.py"],
+                    },
+                    context,
+                )
+            )
+            ToolExecutor(tool_manager=object()).sync_state(conversation, context)
+
+            service = WorkspaceSessionService(root_dir=Path(temp_dir) / "workspace_sessions")
+            service.save_snapshot(conversation)
+
+            payload = json.loads((Path(temp_dir) / ".pychat" / "sessions" / conversation.id / "state.json").read_text(encoding="utf-8"))
+
+            self.assertEqual("analyze\nrefactor\nverify", payload["documents"]["plan"]["content"])
+            self.assertEqual("plan index", payload["documents"]["plan"]["abstract"])
+
+    def test_chat_mode_policy_matches_optional_tools(self) -> None:
+        mode = resolve_mode_config("chat")
+        policy = get_mode_feature_policy(mode)
+
+        self.assertIn("search", mode.group_names())
+        self.assertIn("mcp", mode.group_names())
+        self.assertTrue(policy.allow_search)
+        self.assertTrue(policy.allow_mcp)
+        self.assertFalse(policy.default_search)
+        self.assertFalse(policy.default_mcp)
+
     def test_mcp_tool_name_codec_roundtrip(self) -> None:
         name = build_mcp_tool_name("GitHub Server", "list-issues")
 
@@ -495,17 +674,17 @@ class SkillRuntimeTests(unittest.TestCase):
         self.assertEqual("application/json", headers["Content-Type"])
         self.assertNotIn("Authorization", headers)
 
-    def test_architect_alias_resolves_to_plan_mode(self) -> None:
+    def test_architect_mode_no_longer_aliases_to_plan(self) -> None:
         builtin_slugs = {mode.slug for mode in get_default_modes()}
 
         self.assertIn("plan", builtin_slugs)
         self.assertNotIn("architect", builtin_slugs)
-        self.assertEqual("plan", normalize_mode_slug("architect"))
+        self.assertEqual("architect", normalize_mode_slug("architect"))
 
         mode = resolve_mode_config("architect")
 
-        self.assertEqual("plan", mode.slug)
-        self.assertEqual("Plan", mode.name)
+        self.assertEqual("architect", mode.slug)
+        self.assertNotEqual("plan", mode.slug)
 
     def test_switch_mode_rebuilds_target_mode_defaults(self) -> None:
         task = Task(client=object(), tool_manager=object())

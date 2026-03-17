@@ -5,8 +5,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from core.attachments import encode_image_file_to_data_url
 from core.tools.base import BaseTool, ToolContext, ToolResult
-from utils.image_encoding import encode_image_file_to_data_url
 
 class LsTool(BaseTool):
     @property

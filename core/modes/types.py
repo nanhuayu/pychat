@@ -26,9 +26,6 @@ GroupEntry = Union[GroupName, Tuple[GroupName, GroupOptions]]
 
 # All known tool groups.
 TOOL_GROUPS = {"read", "edit", "command", "mcp", "search", "browser", "modes"}
-MODE_ALIASES = {
-    "architect": "plan",
-}
 
 
 @dataclass(frozen=True)
@@ -65,7 +62,7 @@ def normalize_mode_slug(raw: str) -> str:
     s = (raw or "").strip().lower()
     if not s:
         return "chat"
-    return MODE_ALIASES.get(s, s)
+    return s
 
 
 def safe_mode_display_name(mode: ModeConfig) -> str:

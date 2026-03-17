@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
@@ -120,22 +120,17 @@ class ConversationPresenter:
 
     def new(self) -> None:
         host = self._host
-        host.current_conversation = Conversation()
+        host.current_conversation = host._seed_conversation_from_input(Conversation())
         try:
-            host.current_conversation.provider_id = host.input_area.get_selected_provider_id()
-            host.current_conversation.model = host.input_area.get_selected_model()
-            host.current_conversation.mode = host.input_area.get_selected_mode_slug()
-            host.current_conversation.settings = dict(host.current_conversation.settings or {})
-            host.current_conversation.settings["show_thinking"] = bool(host.input_area.thinking_toggle.isChecked())
-            host.current_conversation.settings["enable_mcp"] = bool(host.input_area.is_mcp_enabled())
-            host.current_conversation.settings["enable_search"] = bool(host.input_area.is_search_enabled())
+            host.current_conversation = host._seed_conversation_from_input(host.current_conversation)
         except Exception as e:
             logger.debug("Failed to seed new conversation selection: %s", e)
         host.chat_view.clear()
         host.stats_panel.update_stats(None)
         host._sync_chat_header_from_input()
-        host.chat_view.update_work_dir("")
-        host.input_area.set_work_dir("")
+        work_dir = str(getattr(host.current_conversation, "work_dir", "") or "")
+        host.chat_view.update_work_dir(work_dir)
+        host.input_area.set_work_dir(work_dir)
         host.input_area.set_conversation(host.current_conversation)
         try:
             host.services.conv_service.save(host.current_conversation)
@@ -253,7 +248,7 @@ class ConversationPresenter:
 
     def handle_command_result(self, result) -> None:
         host = self._host
-        from core.commands import CommandAction, CommandResult, ShellInvocation, SkillInvocation
+        from core.commands import CommandAction, CommandResult, PromptInvocation, ShellInvocation
 
         if isinstance(result, str):
             self._append_info_message(result)
@@ -271,45 +266,14 @@ class ConversationPresenter:
             return
 
         if result.action == CommandAction.MODE_SWITCH:
-            slug = result.data
-            if slug:
-                idx = host.input_area.mode_combo.findData(slug)
-                if idx >= 0:
-                    host.input_area.mode_combo.setCurrentIndex(idx)
+            self._switch_mode(str(result.data or ""))
             return
 
-        if result.action == CommandAction.SKILL_RUN:
-            payload = result.data if isinstance(result.data, SkillInvocation) else None
-            skill_name = str(payload.skill_name if payload else "").strip()
-            if not skill_name:
+        if result.action == CommandAction.PROMPT_RUN:
+            payload = result.data if isinstance(result.data, PromptInvocation) else None
+            if payload is None:
                 return
-            work_dir = getattr(host.current_conversation, "work_dir", ".") if host.current_conversation else "."
-            skill = host.services.skill_service.get(skill_name, work_dir=work_dir)
-            if skill is None:
-                self._append_info_message(f"Skill `{skill_name}` not found for the current workspace.")
-                return
-
-            spec = host.services.skill_service.get_invocation_spec(skill_name, work_dir=work_dir)
-            if spec is not None and not spec.user_invocable:
-                self._append_info_message(f"Skill `{skill_name}` is not user-invocable.")
-                return
-
-            user_input = str(payload.user_input if payload else "").strip()
-            content = user_input or f"Run the {skill_name} skill for this request."
-            host._msg_presenter.send(
-                content,
-                [],
-                metadata={
-                    "skill_run": {
-                        "name": skill_name,
-                        "source_prefix": payload.source_prefix if payload else "/",
-                        "original_text": payload.original_text if payload else "",
-                        "user_input": user_input,
-                        "description": str(getattr(skill, "description", "") or ""),
-                        "runtime_mode": getattr(spec, "mode", "agent") if spec else "agent",
-                    }
-                },
-            )
+            self._run_prompt_invocation(payload)
             return
 
         if result.action == CommandAction.SHELL_RUN:
@@ -328,6 +292,75 @@ class ConversationPresenter:
         if result.action == CommandAction.DISPLAY and result.display_text:
             self._append_info_message(result.display_text)
 
+    def _run_prompt_invocation(self, payload) -> None:
+        host = self._host
+        if not host.current_conversation:
+            self.new()
+
+        conversation = host.current_conversation
+        if conversation is None:
+            return
+
+        mode_slug = str(getattr(payload, "mode_slug", "") or "").strip().lower()
+        if mode_slug:
+            self._switch_mode(mode_slug, persist=False)
+            try:
+                conversation.mode = mode_slug
+            except Exception as exc:
+                logger.debug("Failed to sync conversation mode for prompt invocation: %s", exc)
+
+        updates = getattr(payload, "document_updates", {}) or {}
+        if isinstance(updates, dict) and updates:
+            self._apply_document_updates(conversation, updates)
+            try:
+                host.services.conv_service.save(conversation)
+            except Exception as exc:
+                logger.debug("Failed to save prompt invocation state: %s", exc)
+
+        metadata = dict(getattr(payload, "metadata", {}) or {})
+        command_run = metadata.get("command_run") if isinstance(metadata, dict) else None
+        if not isinstance(command_run, dict):
+            metadata["command_run"] = {
+                "source_prefix": getattr(payload, "source_prefix", "/"),
+                "original_text": getattr(payload, "original_text", ""),
+            }
+
+        host._msg_presenter.send(
+            str(getattr(payload, "content", "") or "").strip(),
+            [],
+            metadata=metadata,
+        )
+
+    def _apply_document_updates(self, conversation, updates: dict[str, Any]) -> None:
+        try:
+            state = conversation.get_state()
+        except Exception as exc:
+            logger.debug("Failed to load state for prompt invocation updates: %s", exc)
+            return
+
+        changed = False
+        current_seq = int(conversation.current_seq_id() or 0)
+        for name, value in updates.items():
+            doc_name = str(name or "").strip().lower()
+            if not doc_name:
+                continue
+            doc = state.ensure_document(doc_name)
+            next_content = str(value or "").strip()
+            if doc.content == next_content:
+                continue
+            doc.content = next_content
+            doc.updated_seq = current_seq
+            changed = True
+
+        if not changed:
+            return
+
+        try:
+            state.last_updated_seq = current_seq
+            conversation.set_state(state)
+        except Exception as exc:
+            logger.debug("Failed to persist prompt invocation document updates: %s", exc)
+
     def _append_info_message(self, content: str) -> None:
         host = self._host
         if not host.current_conversation:
@@ -336,6 +369,36 @@ class ConversationPresenter:
         host.current_conversation.messages.append(info_msg)
         host.chat_view.add_message(info_msg)
         host.services.conv_service.save(host.current_conversation)
+
+    def _switch_mode(self, mode_slug: str, *, persist: bool = True) -> None:
+        host = self._host
+        normalized = str(mode_slug or "").strip().lower()
+        if not normalized:
+            return
+
+        idx = host.input_area.mode_combo.findData(normalized)
+        if idx < 0:
+            self._append_info_message(f"Unknown mode: {normalized}")
+            return
+
+        try:
+            host.input_area.mode_combo.blockSignals(True)
+            host.input_area.mode_combo.setCurrentIndex(idx)
+        finally:
+            host.input_area.mode_combo.blockSignals(False)
+
+        host.input_area.apply_mode_policy(apply_defaults=True)
+
+        conversation = host.current_conversation
+        if conversation is None:
+            return
+
+        try:
+            conversation.mode = normalized
+            if persist:
+                host.services.conv_service.save(conversation)
+        except Exception as exc:
+            logger.debug("Failed to persist mode switch: %s", exc)
 
     def _run_shell_command(self, payload: ShellInvocation | None) -> None:
         host = self._host

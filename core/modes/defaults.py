@@ -4,6 +4,7 @@ from core.modes.types import ModeConfig
 
 
 _WORKFLOW_REQUIRED_GROUPS = {
+    "chat": {"mcp", "search"},
     "agent": {"modes"},
     "code": {"modes"},
     "debug": {"modes"},
@@ -44,8 +45,8 @@ DEFAULT_MODES: list[ModeConfig] = [
         name="Chat",
         role_definition="You are a helpful and precise assistant. Follow the user's instructions carefully.",
         when_to_use="日常对话、问答、写作、解释代码。",
-        description="通用聊天助手（无工具/工作区约束）",
-        groups=("read",),
+        description="通用聊天助手，可按需启用搜索和 MCP 工具",
+        groups=("read", "search", "mcp"),
         source="builtin",
     ),
     ModeConfig(

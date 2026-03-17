@@ -1,13 +1,10 @@
-"""
-ManageDocumentTool: CRUD for session-level persistent documents.
+"""CRUD for long-form session documents stored inside SessionState."""
 
-Documents (plan, memory, notes, etc.) survive context condensation and
-are always injected into the system prompt, providing long-term memory
-across turns.
-"""
 from typing import Dict, Any
+
+from core.state.services.document_service import DocumentService
 from core.tools.base import BaseTool, ToolContext, ToolResult
-from models.state import SessionDocument
+from models.state import SessionState
 
 
 class ManageDocumentTool(BaseTool):
@@ -57,27 +54,40 @@ class ManageDocumentTool(BaseTool):
                     "type": "string",
                     "description": "Document content. Required for create/update/append."
                 },
+                "abstract": {
+                    "type": "string",
+                    "description": "Short abstract for indexing and prompt previews."
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Optional document kind, e.g. plan, note, report, reference."
+                },
+                "references": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Important file paths, URLs, or code locations related to the document."
+                },
             },
             "required": ["action"],
         }
 
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         action = arguments.get("action", "")
-        name = (arguments.get("name") or "").strip()
+        name = DocumentService.normalize_name(arguments.get("name"))
         content = arguments.get("content", "")
+        abstract = arguments.get("abstract") if "abstract" in arguments else None
+        kind = arguments.get("kind") if "kind" in arguments else None
+        references = arguments.get("references") if "references" in arguments else None
 
-        conv = context.conversation
-        if conv is None:
-            return ToolResult("No conversation context available.", is_error=True)
-
-        state = conv.get_state()
-        seq = getattr(conv, "_seq_counter", 0)
+        state = SessionState.from_dict(dict(context.state or {}))
+        seq = int((context.state or {}).get("_current_seq", 0))
 
         if action == "list":
-            if not state.documents:
+            documents = DocumentService.list_documents(state)
+            if not documents:
                 return ToolResult("No documents in this session.")
             lines = []
-            for doc_name, doc in state.documents.items():
+            for doc_name, doc in documents:
                 preview = (doc.content[:80] + "...") if len(doc.content) > 80 else doc.content
                 lines.append(f"- **{doc_name}** ({len(doc.content)} chars): {preview}")
             return ToolResult("\n".join(lines))
@@ -86,26 +96,31 @@ class ManageDocumentTool(BaseTool):
             return ToolResult("'name' is required for this action.", is_error=True)
 
         if action in ("create", "update"):
-            state.documents[name] = SessionDocument(
+            DocumentService.upsert_document(
+                state,
                 name=name,
                 content=content,
-                updated_seq=seq,
+                current_seq=seq,
+                abstract=abstract,
+                kind=kind,
+                references=references,
             )
-            conv.set_state(state)
+            state.last_updated_seq = seq
+            DocumentService.sync_context_state(context.state, state)
             return ToolResult(f"Document '{name}' saved ({len(content)} chars).")
 
         elif action == "append":
-            doc = state.documents.get(name)
-            if doc is None:
-                state.documents[name] = SessionDocument(
-                    name=name,
-                    content=content,
-                    updated_seq=seq,
-                )
-            else:
-                doc.content += "\n" + content
-                doc.updated_seq = seq
-            conv.set_state(state)
+            doc = DocumentService.append_document(
+                state,
+                name=name,
+                content=content,
+                current_seq=seq,
+                abstract=abstract,
+                kind=kind,
+                references=references,
+            )
+            state.last_updated_seq = seq
+            DocumentService.sync_context_state(context.state, state)
             total = len(state.documents[name].content)
             return ToolResult(f"Appended to '{name}' (total {total} chars).")
 
@@ -116,10 +131,10 @@ class ManageDocumentTool(BaseTool):
             return ToolResult(doc.content)
 
         elif action == "delete":
-            if name not in state.documents:
+            if not DocumentService.delete_document(state, name=name):
                 return ToolResult(f"Document '{name}' not found.", is_error=True)
-            del state.documents[name]
-            conv.set_state(state)
+            state.last_updated_seq = seq
+            DocumentService.sync_context_state(context.state, state)
             return ToolResult(f"Document '{name}' deleted.")
 
         return ToolResult(f"Unknown action: {action}", is_error=True)

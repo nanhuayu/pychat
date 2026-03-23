@@ -24,7 +24,7 @@ class PromptInvocation:
     content: str
     mode_slug: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
-    document_updates: Dict[str, str] = field(default_factory=dict)
+    document_updates: Dict[str, Any] = field(default_factory=dict)
     source_prefix: str = "/"
     original_text: str = ""
 

@@ -34,8 +34,9 @@ from core.tools.system.state_mgr import StateMgrTool
 from core.tools.system.document_tools import ManageDocumentTool
 from core.tools.base import ToolContext
 from models.conversation import Conversation, Message
-from models.provider import Provider
+from models.provider import Provider, build_model_ref, split_model_ref
 from models.state import SessionDocument
+from core.state.services.task_planning_service import TaskPlanningService
 from services.workspace_session_service import WorkspaceSessionService
 from core.state.services.task_service import TaskService
 
@@ -448,7 +449,7 @@ class SkillRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(
             "inspect the runtime flow and produce a concrete plan",
-            result.data.document_updates.get("plan"),
+            result.data.document_updates.get("plan", {}).get("content"),
         )
 
     def test_skill_command_returns_prompt_run_invocation(self) -> None:
@@ -494,6 +495,16 @@ class SkillRuntimeTests(unittest.TestCase):
             mgr = SkillsManager(temp_dir)
 
             self.assertIsNone(mgr.get("legacy"))
+
+    def test_skills_manager_ignores_flat_legacy_skill_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            legacy_skill = Path(temp_dir) / ".pychat" / "skills" / "legacy-skill.md"
+            legacy_skill.parent.mkdir(parents=True)
+            legacy_skill.write_text("# legacy skill", encoding="utf-8")
+
+            mgr = SkillsManager(temp_dir)
+
+            self.assertIsNone(mgr.get("legacy-skill"))
 
     def test_workspace_session_snapshot_keeps_only_state_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -617,6 +628,26 @@ class SkillRuntimeTests(unittest.TestCase):
 
         self.assertEqual([], state.tasks)
 
+    def test_task_planning_service_bootstraps_multiple_tasks(self) -> None:
+        tasks = TaskPlanningService.build_bootstrap_tasks(
+            request_text="重构 provider 显示；统一 model 标识；补 UI 回归",
+            mode_slug="agent",
+            current_seq=3,
+        )
+
+        self.assertGreaterEqual(len(tasks), 3)
+        self.assertIn("provider 显示", tasks[0].content)
+
+    def test_task_planning_service_marks_ambiguous_requests_for_clarification(self) -> None:
+        tasks = TaskPlanningService.build_bootstrap_tasks(
+            request_text="修一下",
+            mode_slug="agent",
+            current_seq=5,
+        )
+
+        self.assertTrue(tasks)
+        self.assertIn("确认", tasks[0].content)
+
     def test_workspace_snapshot_persists_tool_written_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conversation = Conversation(work_dir=temp_dir, mode="plan")
@@ -673,6 +704,19 @@ class SkillRuntimeTests(unittest.TestCase):
 
         self.assertEqual("application/json", headers["Content-Type"])
         self.assertNotIn("Authorization", headers)
+
+    def test_provider_model_ref_uses_canonical_provider_name(self) -> None:
+        provider = Provider(name="Anthropic (via Proxy)", default_model="claude-3-5-sonnet")
+
+        self.assertEqual("anthropic-via-proxy", provider.name)
+        self.assertEqual(
+            "anthropic-via-proxy|claude-3-5-sonnet",
+            build_model_ref(provider.name, provider.default_model),
+        )
+        self.assertEqual(
+            ("anthropic-via-proxy", "claude-3-5-sonnet"),
+            split_model_ref("Anthropic (via Proxy)|claude-3-5-sonnet"),
+        )
 
     def test_architect_mode_no_longer_aliases_to_plan(self) -> None:
         builtin_slugs = {mode.slug for mode in get_default_modes()}

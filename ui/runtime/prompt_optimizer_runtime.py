@@ -32,6 +32,7 @@ class PromptOptimizer(QObject):
     optimize_started = pyqtSignal(str, str)
     optimize_complete = pyqtSignal(str, str, str)
     optimize_error = pyqtSignal(str, str, str)
+    optimize_cancelled = pyqtSignal(str, str)
 
     def __init__(self, client: LLMClient, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -124,3 +125,12 @@ class PromptOptimizer(QObject):
         th = threading.Thread(target=run, name="PromptOptimizer", daemon=True)
         th.start()
         return request_id
+
+    def cancel(self, conversation_id: str) -> bool:
+        conversation_key = str(conversation_id or "")
+        with self._lock:
+            request_id = self._active.pop(conversation_key, "")
+        if not request_id:
+            return False
+        self.optimize_cancelled.emit(conversation_key, request_id)
+        return True

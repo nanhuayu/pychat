@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from PyQt6.QtWidgets import QMessageBox
 
 from models.conversation import Conversation, Message
-from models.provider import Provider
+from models.provider import Provider, build_model_ref
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -64,6 +64,7 @@ class MessagePresenter:
 
         host.current_conversation = host._seed_conversation_from_input(host.current_conversation)
         host.current_conversation.provider_id = provider_id
+        host.current_conversation.provider_name = getattr(provider, "name", "") or ""
         host.current_conversation.model = model
         host.stats_panel.update_stats(host.current_conversation)
         host.services.conv_service.save(host.current_conversation)
@@ -87,6 +88,7 @@ class MessagePresenter:
                 "provider_id": provider_id,
                 "provider_name": getattr(provider, "name", ""),
                 "model": model,
+                "model_ref": build_model_ref(getattr(provider, "name", ""), model),
             }
         )
         host.current_conversation.add_message(user_message)
@@ -438,15 +440,11 @@ class MessagePresenter:
             and host.current_conversation.id == conversation_id
         ):
             return
-        provider_name = ""
-        if host.current_conversation.provider_id:
-            for p in host.providers:
-                if p.id == host.current_conversation.provider_id:
-                    provider_name = p.name
-                    break
         host.chat_view.update_header(
-            provider_name=provider_name,
-            model=host.current_conversation.model or "",
+            build_model_ref(
+                getattr(host.current_conversation, "provider_name", ""),
+                host.current_conversation.model or "",
+            ),
             msg_count=len(host.current_conversation.messages),
         )
 

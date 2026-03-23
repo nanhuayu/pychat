@@ -1,11 +1,11 @@
-"""Skill system — load reusable skill documents plus declared invocation metadata.
+"""Skill system — load reusable skill directories plus declared invocation metadata.
 
 Skills are discovered from:
 - ``~/.PyChat/skills/``
 - ``.pychat/skills/``
 
+Each skill must live in its own directory with ``SKILL.md`` as the entrypoint.
 Explicit ``/{skill}`` invocation is the only skill execution entrypoint.
-Skills declare how they run through frontmatter rather than runtime heuristics.
 """
 from __future__ import annotations
 
@@ -180,11 +180,6 @@ class SkillsManager:
             if not skill_file.is_file():
                 return None
             return self._load_skill_file(skill_file, default_name=entry.name)
-
-        if entry.is_file() and entry.suffix.lower() in (".md", ".txt"):
-            if entry.name.lower() == "skill.md":
-                return None
-            return self._load_skill_file(entry, default_name=entry.stem)
         return None
 
     def _load_skill_file(self, path: Path, *, default_name: str) -> Optional[Skill]:

@@ -450,7 +450,11 @@ class MessageWidget(QFrame):
     def _add_model_badge(self, layout):
         model = None
         if isinstance(self.message.metadata, dict):
-            model = self.message.metadata.get('model') or self.message.metadata.get('model_name')
+            model = (
+                self.message.metadata.get('model_ref')
+                or self.message.metadata.get('model')
+                or self.message.metadata.get('model_name')
+            )
         if model:
             text = str(model)
             if len(text) > 22:

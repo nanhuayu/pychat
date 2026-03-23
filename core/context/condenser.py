@@ -155,12 +155,22 @@ class ContextCondenser:
         )
 
         prompt = f"## Previous Summary\n{state.summary}\n\n## New Conversation Delta\n{transcript}\n"
-        summary_model = (
+        from models.provider import normalize_provider_name, split_model_ref
+
+        configured_summary_model = (
             (conversation.settings or {}).get("summary_model")
             or (getattr(context_cfg, "summary_model", "") or "").strip()
             or conversation.model
             or provider.default_model
         )
+        summary_provider_name, summary_model_name = split_model_ref(str(configured_summary_model or ""))
+        if summary_provider_name and summary_provider_name != normalize_provider_name(provider.name):
+            logger.debug(
+                "Ignoring summary provider override '%s' because the active provider is '%s'",
+                summary_provider_name,
+                normalize_provider_name(provider.name),
+            )
+        summary_model = summary_model_name or str(configured_summary_model or "").strip()
         summary_system = (
             (conversation.settings or {}).get("summary_system_prompt")
             or (getattr(context_cfg, "summary_system_prompt", "") or "").strip()

@@ -18,10 +18,12 @@ class ComposerToolbar(QWidget):
     conversation_settings_requested = pyqtSignal()
     provider_settings_requested = pyqtSignal()
     prompt_optimize_requested = pyqtSignal()
+    prompt_optimize_cancel_requested = pyqtSignal()
     send_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._prompt_optimize_busy = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -72,7 +74,7 @@ class ComposerToolbar(QWidget):
         layout.addStretch()
 
         self.prompt_optimize_btn = self._make_button("✨", "优化提示词")
-        self.prompt_optimize_btn.clicked.connect(self.prompt_optimize_requested.emit)
+        self.prompt_optimize_btn.clicked.connect(self._handle_prompt_optimize_clicked)
         layout.addWidget(self.prompt_optimize_btn)
 
         self.send_btn = self._make_button("", "发送消息 (Ctrl+Enter)")
@@ -114,5 +116,13 @@ class ComposerToolbar(QWidget):
         self.send_btn.setToolTip("停止生成" if is_streaming else "发送消息 (Ctrl+Enter)")
 
     def set_prompt_optimize_busy(self, busy: bool, *, is_streaming: bool) -> None:
-        self.prompt_optimize_btn.setEnabled((not busy) and (not is_streaming))
-        self.prompt_optimize_btn.setToolTip("优化中..." if busy else "优化提示词")
+        self._prompt_optimize_busy = bool(busy)
+        self.prompt_optimize_btn.setEnabled(not is_streaming)
+        self.prompt_optimize_btn.setText("■" if busy else "✨")
+        self.prompt_optimize_btn.setToolTip("取消提示词优化" if busy else "优化提示词")
+
+    def _handle_prompt_optimize_clicked(self) -> None:
+        if self._prompt_optimize_busy:
+            self.prompt_optimize_cancel_requested.emit()
+            return
+        self.prompt_optimize_requested.emit()

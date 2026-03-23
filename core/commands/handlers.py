@@ -61,7 +61,7 @@ def cmd_skills(args: str, ctx: Dict[str, Any]) -> CommandResult:
         return CommandResult(
             action=CommandAction.DISPLAY,
             display_text=(
-                "No skills found. Add a legacy `.md` skill or a directory skill with `SKILL.md` to "
+                "No skills found. Add a skill directory with `SKILL.md` to "
                 f"`{get_global_subdir('skills')}` or `.pychat/skills/`."
             ),
         )
@@ -90,7 +90,13 @@ def cmd_plan(args: str, ctx: Dict[str, Any]) -> CommandResult | str:
                         "source": "slash_command",
                     }
                 },
-                document_updates={"plan": plan_text},
+                document_updates={
+                    "plan": {
+                        "content": plan_text,
+                        "abstract": "当前请求的活动执行计划",
+                        "kind": "plan",
+                    }
+                },
                 source_prefix="/",
                 original_text=f"/plan {plan_text}",
             ),

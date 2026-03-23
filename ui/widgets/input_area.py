@@ -33,6 +33,7 @@ class InputArea(QWidget):
     mcp_toggled = pyqtSignal(bool)  # MCP 开关
     search_toggled = pyqtSignal(bool)  # 搜索开关
     prompt_optimize_requested = pyqtSignal(str)  # Optimize current input prompt
+    prompt_optimize_cancel_requested = pyqtSignal()
     
     provider_model_changed = pyqtSignal(str, str)  # provider_id, model
     mode_changed = pyqtSignal(str)
@@ -136,6 +137,7 @@ class InputArea(QWidget):
         self.toolbar.conversation_settings_requested.connect(self.conversation_settings_requested.emit)
         self.toolbar.provider_settings_requested.connect(self.provider_settings_requested.emit)
         self.toolbar.prompt_optimize_requested.connect(self._on_prompt_optimize_clicked)
+        self.toolbar.prompt_optimize_cancel_requested.connect(self.prompt_optimize_cancel_requested.emit)
         self.toolbar.send_requested.connect(self._handle_send_requested)
         wrapper_layout.addWidget(self.toolbar)
         layout.addWidget(input_wrapper)
@@ -235,10 +237,6 @@ class InputArea(QWidget):
             text = ""
         if not text:
             return
-        try:
-            self.set_prompt_optimize_busy(True)
-        except Exception as e:
-            logger.debug("Failed to set optimize busy state: %s", e)
         self.prompt_optimize_requested.emit(text)
 
     def _handle_send_requested(self):

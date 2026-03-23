@@ -4,7 +4,7 @@ Provider service for managing LLM providers
 
 import httpx
 from typing import List, Optional
-from models.provider import Provider
+from models.provider import Provider, normalize_provider_name
 
 
 class ProviderService:
@@ -63,6 +63,7 @@ class ProviderService:
     
     def validate_provider(self, provider: Provider) -> tuple[bool, str]:
         """Validate provider configuration"""
+        provider.name = normalize_provider_name(provider.name)
         if not provider.name.strip():
             return False, "Provider name is required"
         if not provider.api_base.strip():
@@ -78,7 +79,7 @@ class ProviderService:
         """Create default provider configurations"""
         return [
             Provider(
-                name="OpenAI",
+                name="openai",
                 api_base="https://api.openai.com/v1",
                 models=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
                 default_model="gpt-4o-mini",
@@ -86,7 +87,7 @@ class ProviderService:
                 supports_thinking=False
             ),
             Provider(
-                name="Anthropic (via Proxy)",
+                name="anthropic",
                 api_base="https://api.anthropic.com/v1",
                 models=["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"],
                 default_model="claude-3-5-sonnet-20241022",
@@ -95,7 +96,7 @@ class ProviderService:
                 custom_headers={"anthropic-version": "2023-06-01"}
             ),
             Provider(
-                name="Ollama (Local)",
+                name="ollama",
                 api_base="http://localhost:11434/v1",
                 models=[],
                 supports_vision=True,

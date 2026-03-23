@@ -229,9 +229,9 @@ class ChatView(QWidget):
             self.work_dir_btn.setText(f"📁 {name}")
             self.work_dir_btn.setToolTip(f"工作区: {path}")
 
-    def update_header(self, provider_name: str, model: str, msg_count: int = 0):
+    def update_header(self, model_ref: str, msg_count: int = 0):
         """Update header info"""
-        text = f"{provider_name} / {model}" if provider_name else model or "未选择模型"
+        text = model_ref or "未选择模型"
         if msg_count > 0:
             text += f" ({msg_count})"
         self.model_indicator.setText(text)

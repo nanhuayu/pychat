@@ -9,7 +9,7 @@ from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from models.conversation import Conversation, Message
-from models.provider import Provider
+from models.provider import Provider, build_model_ref
 from models.streaming import ConversationStreamState
 
 from core.llm.client import LLMClient
@@ -81,7 +81,7 @@ class MessageRuntime(QObject):
             return None
 
         request_id = str(uuid.uuid4())
-        model_name = (conversation.model or provider.default_model or "")
+        model_name = build_model_ref(provider.name, conversation.model or provider.default_model or "")
 
         state = ConversationStreamState(
             conversation_id=conversation_id,

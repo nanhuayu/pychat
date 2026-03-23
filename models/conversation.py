@@ -169,6 +169,7 @@ class Conversation:
     title: str = "New Chat"
     messages: List[Message] = field(default_factory=list)
     provider_id: str = ""
+    provider_name: str = ""
     model: str = ""
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
@@ -195,6 +196,7 @@ class Conversation:
             'title': self.title,
             'messages': [msg.to_dict() for msg in self.messages],
             'provider_id': self.provider_id,
+            'provider_name': self.provider_name,
             'model': self.model,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
@@ -247,6 +249,7 @@ class Conversation:
             title=data.get('title', 'Imported Chat'),
             messages=messages,
             provider_id=data.get('provider_id', ''),
+            provider_name=data.get('provider_name', ''),
             model=data.get('model', ''),
             created_at=created_at,
             updated_at=updated_at,

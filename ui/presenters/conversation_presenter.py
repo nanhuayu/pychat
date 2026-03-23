@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Any
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 from core.tools.permissions import ToolPermissionPolicy
+from core.state.services.document_service import DocumentService
 from models.conversation import Conversation, Message
+from models.provider import build_model_ref, provider_matches_name
 from services.command_service import CommandExecutionDenied
 
 if TYPE_CHECKING:
@@ -59,6 +61,12 @@ class ConversationPresenter:
                         host.input_area.provider_combo.setCurrentIndex(i)
                         provider_name = provider.name
                         break
+            if not provider_name and getattr(conversation, "provider_name", ""):
+                for i, provider in enumerate(host.providers):
+                    if provider_matches_name(provider, conversation.provider_name):
+                        host.input_area.provider_combo.setCurrentIndex(i)
+                        provider_name = provider.name
+                        break
 
             if conversation.model:
                 host.input_area.model_combo.setCurrentText(conversation.model)
@@ -92,8 +100,7 @@ class ConversationPresenter:
 
             # Update chat header
             host.chat_view.update_header(
-                provider_name=provider_name,
-                model=conversation.model or "",
+                build_model_ref(provider_name or conversation.provider_name, conversation.model or ""),
                 msg_count=len(conversation.messages),
             )
             work_dir = getattr(conversation, "work_dir", "")
@@ -344,12 +351,29 @@ class ConversationPresenter:
             doc_name = str(name or "").strip().lower()
             if not doc_name:
                 continue
-            doc = state.ensure_document(doc_name)
-            next_content = str(value or "").strip()
-            if doc.content == next_content:
-                continue
-            doc.content = next_content
-            doc.updated_seq = current_seq
+            payload = value if isinstance(value, dict) else {"content": value}
+            next_content = str(payload.get("content") or "")
+            next_abstract = payload.get("abstract")
+            next_kind = payload.get("kind")
+            next_references = DocumentService.normalize_references(payload.get("references"))
+            existing = state.documents.get(doc_name)
+            if existing is not None:
+                if (
+                    existing.content == next_content
+                    and (next_abstract is None or existing.abstract == str(next_abstract or "").strip())
+                    and (next_kind is None or existing.kind == str(next_kind or "").strip().lower())
+                    and (payload.get("references") is None or existing.references == next_references)
+                ):
+                    continue
+            DocumentService.upsert_document(
+                state,
+                name=doc_name,
+                content=next_content,
+                current_seq=current_seq,
+                abstract=next_abstract,
+                kind=next_kind,
+                references=payload.get("references"),
+            )
             changed = True
 
         if not changed:

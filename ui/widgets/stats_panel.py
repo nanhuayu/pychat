@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from models.conversation import Conversation
+from models.provider import build_model_ref
 from models.state import TaskStatus
 
 
@@ -392,7 +393,8 @@ class StatsPanel(QWidget):
         else:
             self.last_response_time.set_value("-")
         
-        self.model_label.setText(conversation.model or "-")
+        model_ref = build_model_ref(getattr(conversation, 'provider_name', ''), conversation.model or '')
+        self.model_label.setText(model_ref or "-")
     
     def update_streaming_stats(self, tokens: int, elapsed_ms: int):
         self.total_tokens.set_value(f"{tokens:,}")

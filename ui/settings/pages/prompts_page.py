@@ -69,7 +69,7 @@ class PromptsPage(QWidget):
         opt_form.addRow("模板", self.prompt_opt_template_combo)
 
         self.prompt_opt_model_edit = QLineEdit()
-        self.prompt_opt_model_edit.setPlaceholderText("留空时跟随当前对话模型")
+        self.prompt_opt_model_edit.setPlaceholderText("留空时跟随当前对话模型，或填写 provider|model")
         self.prompt_opt_model_edit.setText((prompt_optimizer_model or "").strip())
         opt_form.addRow("优化模型", self.prompt_opt_model_edit)
 

@@ -40,7 +40,7 @@ class ContextPage(QWidget):
         )
         self.summary_model = agent.add_line_edit(
             "压缩模型", text=(context.summary_model or ""),
-            placeholder="留空时跟随当前对话模型",
+            placeholder="留空时跟随当前对话模型，或填写 provider|model",
         )
         self.summary_include_tool_details = agent.add_checkbox(
             "压缩时包含工具详情", checked=bool(context.summary_include_tool_details),

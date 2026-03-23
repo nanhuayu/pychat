@@ -26,6 +26,7 @@ from core.llm.client import LLMClient
 from core.tools.manager import ToolManager
 from core.tools.base import ToolResult
 from core.config import load_app_config, AppConfig
+from core.state.services.task_planning_service import TaskPlanningService
 from core.task.types import (
     RunPolicy,
     SubTaskOutcome,
@@ -624,21 +625,15 @@ class Task:
 
         try:
             if not state.get_active_tasks() and latest_user:
-                from models.state import Task as SessionTask, TaskPriority
-
-                summary = latest_user.replace("\n", " ").strip()
-                if len(summary) > 120:
-                    summary = summary[:117] + "..."
                 current_seq = int(conversation.current_seq_id() or 0)
-                state.tasks.append(
-                    SessionTask(
-                        content=summary or f"Complete the current {mode_slug} task",
-                        priority=TaskPriority.HIGH,
-                        created_seq=current_seq,
-                        updated_seq=current_seq,
-                    )
+                seeded_tasks = TaskPlanningService.build_bootstrap_tasks(
+                    request_text=latest_user,
+                    mode_slug=mode_slug,
+                    current_seq=current_seq,
                 )
-                changed = True
+                if seeded_tasks:
+                    state.tasks.extend(seeded_tasks)
+                    changed = True
         except Exception as e:
             logger.debug("Failed to seed session task: %s", e)
 

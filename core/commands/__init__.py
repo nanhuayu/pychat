@@ -195,7 +195,7 @@ class CommandRegistry:
                     ),
                 )
             if prefix == "/":
-                skill_name = self._resolve_skill_alias(cmd_name, context)
+                skill_name = self._resolve_skill_name(cmd_name, context)
                 if skill_name:
                     work_dir = str((context or {}).get("work_dir") or ".")
                     skill = SkillsManager(work_dir).get(skill_name)
@@ -211,7 +211,7 @@ class CommandRegistry:
                                     "user_input": invocation.surrounding_text,
                                     "invoke_mode": "run",
                                     "mode": spec.mode if spec is not None else "agent",
-                                    "enable_mcp": bool(spec.enable_mcp) if spec is not None else True,
+                                    "enable_mcp": bool(spec.enable_mcp) if spec is not None else False,
                                     "enable_search": bool(spec.enable_search) if spec is not None else False,
                                 }
                             },
@@ -223,7 +223,7 @@ class CommandRegistry:
         except Exception as e:
             return CommandResult(action=CommandAction.DISPLAY, display_text=f"Command error: {e}")
 
-    def _resolve_skill_alias(self, name: str, context: Optional[Dict[str, Any]]) -> str:
+    def _resolve_skill_name(self, name: str, context: Optional[Dict[str, Any]]) -> str:
         normalized = str(name or "").strip().lower()
         if not normalized:
             return ""

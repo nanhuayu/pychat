@@ -1,11 +1,40 @@
-"""
-LLM Provider configuration model
-"""
+"""LLM provider configuration model and canonical model identity helpers."""
 
+import re
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import uuid
 import json
+
+
+def normalize_provider_name(name: str) -> str:
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    return re.sub(r"-+", "-", normalized)
+
+
+def split_model_ref(value: str) -> Tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    if "|" not in text:
+        return "", text
+    provider_name, model_name = text.split("|", 1)
+    return normalize_provider_name(provider_name), str(model_name or "").strip()
+
+
+def build_model_ref(provider_name: str, model_name: str) -> str:
+    provider_token = normalize_provider_name(provider_name)
+    model_token = str(model_name or "").strip()
+    if provider_token and model_token:
+        return f"{provider_token}|{model_token}"
+    return model_token or provider_token
+
+
+def provider_matches_name(provider: "Provider", provider_name: str) -> bool:
+    return normalize_provider_name(getattr(provider, "name", "")) == normalize_provider_name(provider_name)
 
 
 @dataclass
@@ -22,6 +51,19 @@ class Provider:
     supports_thinking: bool = False
     supports_vision: bool = True
     enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.normalize_inplace()
+
+    def normalize_inplace(self) -> None:
+        self.name = normalize_provider_name(self.name)
+
+    @property
+    def canonical_name(self) -> str:
+        return normalize_provider_name(self.name)
+
+    def format_model_ref(self, model_name: str = "") -> str:
+        return build_model_ref(self.name, model_name or self.default_model)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""

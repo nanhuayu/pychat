@@ -14,7 +14,7 @@ from PyQt6.QtGui import QAction
 from typing import Optional
 
 from models.conversation import Conversation, Message
-from models.provider import Provider
+from models.provider import Provider, build_model_ref, provider_matches_name, split_model_ref
 from core.container import AppContainer
 from ui.runtime.message_runtime import MessageRuntime
 from ui.runtime.prompt_optimizer_runtime import PromptOptimizer
@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
         self.prompt_optimizer.optimize_started.connect(self._on_prompt_optimize_started)
         self.prompt_optimizer.optimize_complete.connect(self._on_prompt_optimize_complete)
         self.prompt_optimizer.optimize_error.connect(self._on_prompt_optimize_error)
+        self.prompt_optimizer.optimize_cancelled.connect(self._on_prompt_optimize_cancelled)
 
         # Presenters — extract business logic out of this God Object
         self._conv_presenter = ConversationPresenter(self)
@@ -122,6 +123,7 @@ class MainWindow(QMainWindow):
         self.input_area.mcp_toggled.connect(self._on_conversation_mcp_changed)
         self.input_area.search_toggled.connect(self._on_conversation_search_changed)
         self.input_area.prompt_optimize_requested.connect(self._on_prompt_optimize_requested)
+        self.input_area.prompt_optimize_cancel_requested.connect(self._on_prompt_optimize_cancel_requested)
         self.input_area.provider_model_changed.connect(self._on_input_provider_model_changed)
         self.input_area.mode_changed.connect(self._on_conversation_mode_changed)
         self.input_area.slash_command_result.connect(self._on_slash_command_result)
@@ -364,7 +366,10 @@ class MainWindow(QMainWindow):
         self._conv_presenter.new()
 
     def _seed_conversation_from_input(self, conversation: Conversation) -> Conversation:
-        conversation.provider_id = self.input_area.get_selected_provider_id()
+        provider_id = self.input_area.get_selected_provider_id()
+        conversation.provider_id = provider_id
+        provider = self.services.conv_service.find_provider(self.providers, provider_id)
+        conversation.provider_name = getattr(provider, 'name', '') or ''
         conversation.model = self.input_area.get_selected_model()
         conversation.mode = str(self.input_area.get_selected_mode_slug() or 'chat') or 'chat'
         conversation.work_dir = self.input_area.get_work_dir()
@@ -429,6 +434,9 @@ class MainWindow(QMainWindow):
         try:
             if provider_id:
                 self.current_conversation.provider_id = provider_id
+                provider = self.services.conv_service.find_provider(self.providers, provider_id)
+                if provider is not None:
+                    self.current_conversation.provider_name = getattr(provider, 'name', '') or ''
             if isinstance(model, str):
                 self.current_conversation.model = model.strip()
         except Exception as e:
@@ -491,6 +499,24 @@ class MainWindow(QMainWindow):
             logger.debug("Failed to reset prompt optimize busy: %s", e)
         QMessageBox.warning(self, '提示词优化失败', err or '未知错误')
 
+    def _on_prompt_optimize_cancelled(self, conversation_id: str, request_id: str) -> None:
+        if not self.current_conversation or self.current_conversation.id != conversation_id:
+            return
+        try:
+            self.input_area.set_prompt_optimize_busy(False)
+        except Exception as e:
+            logger.debug("Failed to reset prompt optimize busy after cancel: %s", e)
+
+    def _on_prompt_optimize_cancel_requested(self) -> None:
+        if not self.current_conversation:
+            return
+        if not self.prompt_optimizer.cancel(self.current_conversation.id):
+            return
+        try:
+            self.input_area.set_prompt_optimize_busy(False)
+        except Exception as e:
+            logger.debug("Failed to reset optimize busy on manual cancel: %s", e)
+
     def _on_prompt_optimize_requested(self, raw_text: str) -> None:
         if not self.current_conversation:
             self.current_conversation = Conversation()
@@ -517,11 +543,18 @@ class MainWindow(QMainWindow):
 
         # Allow per-conversation override
         settings = dict(self.current_conversation.settings or {})
-        opt_model = (
+        configured_opt_model = (
             (settings.get('prompt_optimizer_model') or '').strip()
             or (self._app_settings.get('prompt_optimizer_model') or '').strip()
             or base_model
         )
+        opt_provider_name, opt_model_name = split_model_ref(configured_opt_model)
+        if opt_provider_name:
+            for candidate in self.providers:
+                if provider_matches_name(candidate, opt_provider_name):
+                    provider = candidate
+                    break
+        opt_model = opt_model_name or configured_opt_model or base_model
         opt_sys = (settings.get('prompt_optimizer_system_prompt') or '').strip() or None
 
         if not opt_sys:
@@ -533,6 +566,8 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.debug("Failed to get prompt optimizer template: %s", e)
                 opt_sys = None
+
+        self.input_area.set_prompt_optimize_busy(True)
 
         self.prompt_optimizer.start(
             provider=provider,
@@ -692,7 +727,7 @@ class MainWindow(QMainWindow):
             logger.debug("Failed to get message count for header sync: %s", e)
 
         try:
-            self.chat_view.update_header(provider_name=provider_name, model=(selected_model or ''), msg_count=msg_count)
+            self.chat_view.update_header(build_model_ref(provider_name, selected_model or ''), msg_count=msg_count)
         except Exception as e:
             logger.debug("Failed to sync chat header from input: %s", e)
 

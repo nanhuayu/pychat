@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
         self._apply_theme()
     
     def _setup_ui(self):
-        self.setWindowTitle("PyChat - LLM 会话管理")
+        self.setWindowTitle("PyChat Agent | LLM chat / agent / tools")
         self.setMinimumSize(1000, 600)
         
         central = QWidget()
@@ -274,7 +274,7 @@ class MainWindow(QMainWindow):
         
         help_menu = menubar.addMenu("帮助")
         
-        about_action = QAction("关于 PyChat", self)
+        about_action = QAction("关于 PyChat Agent", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
 
@@ -876,11 +876,12 @@ class MainWindow(QMainWindow):
     
     def _show_about(self):
         QMessageBox.about(
-            self, "关于 PyChat",
-            "<h2>PyChat</h2>"
-            "<p>强大的大语言模型会话管理应用</p>"
+            self, "关于 PyChat Agent",
+            "<h2>PyChat Agent</h2>"
+            "<p>LLM chat / agent / tools 一体化桌面工作台</p>"
             "<p>功能:</p>"
             "<ul>"
+            "<li>统一支持 Chat、Agent 与 Tools 工作流</li>"
             "<li>多服务商支持 (OpenAI, Claude, Ollama 等)</li>"
             "<li>会话管理与 JSON 导入/导出</li>"
             "<li>消息编辑与图片支持</li>"
@@ -888,6 +889,7 @@ class MainWindow(QMainWindow):
             "<li>Token 统计与性能指标</li>"
             "</ul>"
             "<p>基于 PyQt6 构建</p>"
+            "<p>许可证：AGPL-3.0</p>"
         )
 
     def closeEvent(self, event) -> None:

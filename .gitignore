@@ -37,6 +37,7 @@ pip-wheel-metadata/
 *.spec
 build/
 dist/
+release/
 
 # Virtual environments
 venv/

@@ -1,15 +1,8 @@
 """
-PyChat - LLM Chat Management Application
+PyChat Agent | LLM chat / agent / tools
 
-A desktop application for managing conversations with Large Language Models.
-Similar to Cherry Studio and Chatbox.
-
-Features:
-- Multi-provider support (OpenAI, Claude, Ollama, etc.)
-- Conversation management with JSON import/export
-- Message editing (text and images)
-- Thinking mode support
-- Token statistics and performance metrics
+An all-in-one desktop AI workspace that unifies LLM chat, agent workflows,
+and tool calling in a single PyQt6 application.
 """
 
 import sys
@@ -34,7 +27,7 @@ def main():
     app = QApplication(sys.argv)
     
     # Set application info
-    app.setApplicationName("PyChat")
+    app.setApplicationName("PyChat Agent")
     app.setOrganizationName("PyChat")
     app.setApplicationVersion("1.0.0")
     

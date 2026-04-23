@@ -4,6 +4,9 @@
 *.zip
 *.tar.gz
 
+.env
+.env.*
+_*.md
 temp/
 temp_*
 debug/
